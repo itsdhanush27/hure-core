@@ -86,12 +86,13 @@ export default function EmployerDashboard() {
                 }
             }
 
-            // Fetch staff
-            const staffRes = await fetch(`/api/clinics/${clinicId}/staff`, {
+            // Fetch staff (include owner for payroll purposes)
+            const staffRes = await fetch(`/api/clinics/${clinicId}/staff?includeOwner=true`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             })
             if (staffRes.ok) {
                 const staffData = await staffRes.json()
+                console.log('📊 Staff data received:', staffData.data?.length, 'users')
                 setOrg(prev => ({
                     ...prev,
                     staff: staffData.data || [],
@@ -283,8 +284,8 @@ export default function EmployerDashboard() {
 
             {/* Sidebar */}
             <aside className={`
-        fixed lg:static inset-y-0 left-0 z-50 w-64 bg-slate-900 text-white
-        transform transition-transform lg:transform-none pt-[53px]
+        fixed lg:fixed inset-y-0 left-0 z-50 lg:z-40 w-64 bg-slate-900 text-white
+        transform transition-transform lg:transform-none pt-[53px] overflow-y-auto
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
                 {/* User info */}
@@ -457,7 +458,7 @@ export default function EmployerDashboard() {
         const [showAddForm, setShowAddForm] = useState(false)
         const [newStaff, setNewStaff] = useState({
             first_name: '', last_name: '', email: '', phone: '',
-            job_title: '', location_id: '', hourly_rate: ''
+            job_title: '', location_id: '', hourly_rate: '', hire_date: ''
         })
         const [adding, setAdding] = useState(false)
         const canAddStaff = org.staffCount < limits.staff
@@ -483,7 +484,7 @@ export default function EmployerDashboard() {
                         staffCount: prev.staffCount + 1
                     }))
                     setShowAddForm(false)
-                    setNewStaff({ first_name: '', last_name: '', email: '', phone: '', job_title: '', location_id: '', hourly_rate: '' })
+                    setNewStaff({ first_name: '', last_name: '', email: '', phone: '', job_title: '', location_id: '', hourly_rate: '', hire_date: '' })
                 } else {
                     const err = await res.json()
                     alert(err.error || 'Failed to add staff')
@@ -593,6 +594,15 @@ export default function EmployerDashboard() {
                                         value={newStaff.hourly_rate}
                                         onChange={(e) => setNewStaff({ ...newStaff, hourly_rate: e.target.value })}
                                         placeholder="e.g., 500"
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Hire Date</label>
+                                    <input
+                                        type="date"
+                                        value={newStaff.hire_date}
+                                        onChange={(e) => setNewStaff({ ...newStaff, hire_date: e.target.value })}
                                         className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                     />
                                 </div>
@@ -1370,11 +1380,92 @@ export default function EmployerDashboard() {
     const PayrollView = () => {
         const [activeTab, setActiveTab] = useState('salaried')
         const [dateRange, setDateRange] = useState({ start: '', end: '' })
-        const [externalCoverage, setExternalCoverage] = useState([])
 
-        // Mock data for demonstration
+        const [payrollStats, setPayrollStats] = useState({})
+        const [loadingStats, setLoadingStats] = useState(false)
+
+        // Fetch payroll stats when date range changes
+        useEffect(() => {
+            const fetchPayrollStats = async () => {
+                if (!dateRange.start || !dateRange.end) return
+
+                const clinicId = localStorage.getItem('hure_clinic_id')
+                const token = localStorage.getItem('hure_token')
+
+                setLoadingStats(true)
+                try {
+                    const res = await fetch(
+                        `/api/clinics/${clinicId}/payroll-stats?startDate=${dateRange.start}&endDate=${dateRange.end}`,
+                        { headers: { 'Authorization': `Bearer ${token}` } }
+                    )
+                    if (res.ok) {
+                        const data = await res.json()
+                        console.log('📊 Payroll stats received:', data.stats)
+                        setPayrollStats(data.stats || {})
+                    }
+                } catch (err) {
+                    console.error('Payroll stats fetch error:', err)
+                } finally {
+                    setLoadingStats(false)
+                }
+            }
+            fetchPayrollStats()
+        }, [dateRange.start, dateRange.end])
+
+        // Filter staff by pay type
         const salariedStaff = org.staff.filter(s => !s.pay_type || s.pay_type === 'monthly')
-        const dailyStaff = org.staff.filter(s => s.pay_type === 'daily')
+        const dailyStaff = org.staff.filter(s => s.pay_type === 'daily' || s.pay_type === 'hourly')
+
+        // Helper to get stats for a user
+        const getStats = (userId) => payrollStats[userId] || { full_days: 0, half_days: 0, absent_days: 0, total_hours: 0 }
+
+        // Calculate gross pay for daily/hourly staff
+        const calculateGross = (staff) => {
+            const stats = getStats(staff.id)
+            const rate = staff.pay_rate || 0
+            // Full day = 1 × rate, Half day = 0.5 × rate
+            return (stats.full_days * rate) + (stats.half_days * rate * 0.5)
+        }
+
+        // Export payroll to CSV
+        const exportPayrollCSV = () => {
+            const allStaff = [...salariedStaff, ...dailyStaff]
+
+            // CSV Headers
+            const headers = ['Staff Name', 'Role', 'Pay Type', 'Full Days', 'Half Days', 'Rate (KSh)', 'Gross (KSh)']
+
+            // Generate rows
+            const rows = allStaff.map(s => {
+                const stats = getStats(s.id)
+                const isSalaried = !s.pay_type || s.pay_type === 'monthly'
+                const gross = isSalaried ? (s.pay_rate || 0) : calculateGross(s)
+
+                return [
+                    `${s.first_name} ${s.last_name}`,
+                    s.job_title || 'Staff',
+                    s.pay_type || 'monthly',
+                    stats.full_days,
+                    stats.half_days,
+                    s.pay_rate || 0,
+                    gross
+                ]
+            })
+
+            // Build CSV content
+            const csvContent = [
+                `Payroll Report: ${dateRange.start || 'N/A'} to ${dateRange.end || 'N/A'}`,
+                '',
+                headers.join(','),
+                ...rows.map(row => row.join(','))
+            ].join('\n')
+
+            // Download
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+            const link = document.createElement('a')
+            link.href = URL.createObjectURL(blob)
+            link.download = `payroll_${dateRange.start}_to_${dateRange.end}.csv`
+            link.click()
+        }
 
         return (
             <div className="space-y-6">
@@ -1383,7 +1474,11 @@ export default function EmployerDashboard() {
                         <h1 className="text-xl font-bold">Payroll Export</h1>
                         <p className="text-slate-500 text-sm">Calculate and export payroll based on attendance</p>
                     </div>
-                    <button className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg">
+                    <button
+                        onClick={exportPayrollCSV}
+                        disabled={!dateRange.start || !dateRange.end}
+                        className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
                         Export Payroll
                     </button>
                 </div>
@@ -1448,12 +1543,6 @@ export default function EmployerDashboard() {
                     >
                         Daily / Casual ({dailyStaff.length})
                     </button>
-                    <button
-                        onClick={() => setActiveTab('external')}
-                        className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'external' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
-                    >
-                        External Coverage ({externalCoverage.length})
-                    </button>
                 </div>
 
                 {/* Salaried Staff Tab */}
@@ -1478,17 +1567,21 @@ export default function EmployerDashboard() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {salariedStaff.map(s => (
-                                        <tr key={s.id} className="border-t">
-                                            <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                            <td className="p-3">{s.job_title || 'Staff'}</td>
-                                            <td className="p-3">-</td>
-                                            <td className="p-3">-</td>
-                                            <td className="p-3">-</td>
-                                            <td className="p-3">KSh {(s.monthly_salary || 0).toLocaleString()}</td>
-                                            <td className="p-3 font-medium">KSh {(s.monthly_salary || 0).toLocaleString()}</td>
-                                        </tr>
-                                    ))}
+                                    {salariedStaff.map(s => {
+                                        const stats = getStats(s.id)
+                                        const daysPresent = stats.full_days + stats.half_days
+                                        return (
+                                            <tr key={s.id} className="border-t">
+                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
+                                                <td className="p-3">{s.job_title || 'Staff'}</td>
+                                                <td className="p-3">{loadingStats ? '...' : daysPresent}</td>
+                                                <td className="p-3">{loadingStats ? '...' : stats.absent_days}</td>
+                                                <td className="p-3">{loadingStats ? '...' : '-'}</td>
+                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                                <td className="p-3 font-medium">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                            </tr>
+                                        )
+                                    })}
                                 </tbody>
                             </table>
                         )}
@@ -1512,70 +1605,31 @@ export default function EmployerDashboard() {
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Full Days</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Half Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Hourly Rate</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {dailyStaff.map(s => (
-                                        <tr key={s.id} className="border-t">
-                                            <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                            <td className="p-3">-</td>
-                                            <td className="p-3">-</td>
-                                            <td className="p-3">KSh {(s.daily_rate || 0).toLocaleString()}</td>
-                                            <td className="p-3 font-medium">KSh 0</td>
-                                        </tr>
-                                    ))}
+                                    {dailyStaff.map(s => {
+                                        const stats = getStats(s.id)
+                                        const gross = calculateGross(s)
+                                        return (
+                                            <tr key={s.id} className="border-t">
+                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
+                                                <td className="p-3">{loadingStats ? '...' : stats.full_days}</td>
+                                                <td className="p-3">{loadingStats ? '...' : stats.half_days}</td>
+                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                                <td className="p-3 font-medium">KSh {loadingStats ? '...' : gross.toLocaleString()}</td>
+                                            </tr>
+                                        )
+                                    })}
                                 </tbody>
                             </table>
                         )}
                     </Card>
                 )}
 
-                {/* External Coverage Tab */}
-                {activeTab === 'external' && (
-                    <Card title="External Coverage Register">
-                        <p className="text-sm text-slate-500 mb-4">
-                            External locums from Schedule → Manage Coverage. Not employees, for records/export only.
-                        </p>
-                        {externalCoverage.length === 0 ? (
-                            <div className="text-center py-8 text-slate-500">
-                                <div className="text-4xl mb-4">📋</div>
-                                <div>No external coverage entries in this period.</div>
-                                <p className="text-xs mt-2">External coverage is added via Schedule → Manage Coverage</p>
-                            </div>
-                        ) : (
-                            <table className="w-full">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Date</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">External Name</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Location</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Agreed Pay</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {externalCoverage.map((ext, idx) => (
-                                        <tr key={idx} className="border-t">
-                                            <td className="p-3">{ext.date}</td>
-                                            <td className="p-3 font-medium">{ext.name}</td>
-                                            <td className="p-3">{ext.role}</td>
-                                            <td className="p-3">{ext.location}</td>
-                                            <td className="p-3">{ext.units}</td>
-                                            <td className="p-3">{ext.agreedPay}</td>
-                                            <td className="p-3">
-                                                <span className="px-2 py-1 rounded text-xs bg-amber-100 text-amber-700">Draft</span>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        )}
-                    </Card>
-                )}
+
             </div>
         )
     }
@@ -1708,8 +1762,8 @@ export default function EmployerDashboard() {
                                             onClick={() => handleUpgrade(plan.key)}
                                             disabled={upgrading || org.plan === plan.key}
                                             className={`w-full mt-4 py-2 rounded-lg font-medium ${org.plan === plan.key
-                                                    ? 'bg-slate-100 text-slate-500'
-                                                    : 'bg-primary-600 hover:bg-primary-700 text-white'
+                                                ? 'bg-slate-100 text-slate-500'
+                                                : 'bg-primary-600 hover:bg-primary-700 text-white'
                                                 }`}
                                         >
                                             {org.plan === plan.key ? 'Current Plan' : upgrading ? 'Upgrading...' : 'Select Plan'}
@@ -2039,8 +2093,8 @@ export default function EmployerDashboard() {
                                 {attendance.map(record => (
                                     <tr key={record.id} className="border-t">
                                         <td className="p-3">
-                                            <div className="font-medium">{record.users?.first_name} {record.users?.last_name}</div>
-                                            <div className="text-xs text-slate-500">{record.users?.job_title}</div>
+                                            <div className="font-medium">{record.user?.first_name} {record.user?.last_name}</div>
+                                            <div className="text-xs text-slate-500">{record.user?.job_title}</div>
                                         </td>
                                         <td className="p-3 text-sm">{formatTime(record.clock_in)}</td>
                                         <td className="p-3 text-sm">{formatTime(record.clock_out)}</td>
@@ -2075,16 +2129,22 @@ export default function EmployerDashboard() {
 
         const fetchLeaveRequests = async () => {
             const clinicId = localStorage.getItem('hure_clinic_id')
+            console.log('📋 LeaveView fetching from clinic:', clinicId)
             const url = statusFilter
                 ? `/api/clinics/${clinicId}/leave?status=${statusFilter}`
                 : `/api/clinics/${clinicId}/leave`
+            console.log('📋 LeaveView URL:', url)
             try {
                 const res = await fetch(url, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
+                console.log('📋 LeaveView response status:', res.status)
                 if (res.ok) {
                     const data = await res.json()
+                    console.log('📋 LeaveView results:', data.data?.length || 0, 'requests')
                     setLeaveRequests(data.data || [])
+                } else {
+                    console.error('📋 LeaveView error:', await res.text())
                 }
             } catch (err) {
                 console.error('Fetch leave error:', err)
@@ -2095,6 +2155,7 @@ export default function EmployerDashboard() {
 
         const handleUpdateLeave = async (leaveId, status) => {
             const clinicId = localStorage.getItem('hure_clinic_id')
+            console.log('📋 Updating leave:', leaveId, 'to', status)
             try {
                 const res = await fetch(`/api/clinics/${clinicId}/leave/${leaveId}`, {
                     method: 'PATCH',
@@ -2104,11 +2165,18 @@ export default function EmployerDashboard() {
                     },
                     body: JSON.stringify({ status })
                 })
+                console.log('📋 Update response:', res.status)
                 if (res.ok) {
+                    alert(`Leave request ${status}!`)
                     fetchLeaveRequests()
+                } else {
+                    const err = await res.json()
+                    console.error('📋 Update error:', err)
+                    alert(err.error || `Failed to ${status} leave request`)
                 }
             } catch (err) {
                 console.error('Update leave error:', err)
+                alert('Failed to update leave request')
             }
         }
 
@@ -2193,7 +2261,7 @@ export default function EmployerDashboard() {
                                             {getLeaveTypeIcon(leave.leave_type)}
                                         </div>
                                         <div>
-                                            <div className="font-medium">{leave.users?.first_name} {leave.users?.last_name}</div>
+                                            <div className="font-medium">{leave.user?.first_name} {leave.user?.last_name}</div>
                                             <div className="text-sm text-slate-500">
                                                 {leave.leave_type?.charAt(0).toUpperCase() + leave.leave_type?.slice(1)} Leave · {formatDate(leave.start_date)} - {formatDate(leave.end_date)}
                                             </div>
@@ -2242,6 +2310,30 @@ export default function EmployerDashboard() {
             contact_name: ''
         })
         const [saving, setSaving] = useState(false)
+
+        // Fetch settings when component loads
+        useEffect(() => {
+            const fetchSettings = async () => {
+                const clinicId = localStorage.getItem('hure_clinic_id')
+                try {
+                    const res = await fetch(`/api/clinics/${clinicId}/settings`, {
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                    })
+                    if (res.ok) {
+                        const data = await res.json()
+                        const clinic = data.clinic || {}
+                        setSettings({
+                            name: clinic.name || org.name,
+                            phone: clinic.phone || '',
+                            contact_name: clinic.contact_name || ''
+                        })
+                    }
+                } catch (err) {
+                    console.error('Fetch settings error:', err)
+                }
+            }
+            fetchSettings()
+        }, [])
 
         const handleSave = async () => {
             const clinicId = localStorage.getItem('hure_clinic_id')
@@ -2303,7 +2395,32 @@ export default function EmployerDashboard() {
                     <div className="p-4 bg-red-50 rounded-lg border border-red-200">
                         <div className="font-medium text-red-700 mb-2">Delete Organization</div>
                         <p className="text-sm text-red-600 mb-4">This action cannot be undone. All data will be permanently deleted.</p>
-                        <button className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm">
+                        <button
+                            onClick={async () => {
+                                const confirmed = window.confirm('Are you sure you want to delete this organization? This action cannot be undone. All data will be permanently deleted.')
+                                if (confirmed) {
+                                    const clinicId = localStorage.getItem('hure_clinic_id')
+                                    try {
+                                        const res = await fetch(`/api/clinics/${clinicId}`, {
+                                            method: 'DELETE',
+                                            headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                                        })
+                                        if (res.ok) {
+                                            alert('Organization deleted successfully.')
+                                            localStorage.removeItem('hure_clinic_id')
+                                            localStorage.removeItem('hure_token')
+                                            window.location.href = '/login'
+                                        } else {
+                                            alert('Failed to delete organization. Please try again.')
+                                        }
+                                    } catch (err) {
+                                        console.error('Delete error:', err)
+                                        alert('Failed to delete organization. Please try again.')
+                                    }
+                                }
+                            }}
+                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm"
+                        >
                             Delete Organization
                         </button>
                     </div>
@@ -2354,7 +2471,7 @@ export default function EmployerDashboard() {
             <TopBar />
             <div className="flex pt-[53px]">
                 <Sidebar />
-                <main className="flex-1 p-6 lg:ml-0">
+                <main className="flex-1 p-6 lg:ml-64 overflow-y-auto min-h-[calc(100vh-53px)]">
                     {renderView()}
                 </main>
             </div>

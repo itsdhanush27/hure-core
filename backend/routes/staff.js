@@ -88,6 +88,7 @@ router.post('/', authMiddleware, async (req, res) => {
                 job_title: jobTitle,
                 pay_type: payType,
                 pay_rate: payRate,
+                hire_date: req.body.hire_date || new Date().toISOString().split('T')[0],
                 role: 'staff',
                 account_type: 'staff'
             })
@@ -112,7 +113,7 @@ router.patch('/:userId', authMiddleware, async (req, res) => {
         const { clinicId, userId } = req.params
         const updates = req.body
 
-        const allowedFields = ['first_name', 'last_name', 'phone', 'job_title', 'location_id', 'pay_type', 'pay_rate', 'is_active']
+        const allowedFields = ['first_name', 'last_name', 'phone', 'job_title', 'location_id', 'pay_type', 'pay_rate', 'is_active', 'hire_date']
         const filteredUpdates = {}
         for (const field of allowedFields) {
             if (updates[field] !== undefined) {

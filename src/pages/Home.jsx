@@ -30,11 +30,11 @@ export default function Home() {
                     <h1 className="text-5xl md:text-6xl font-bold text-white mb-6 leading-tight">
                         Streamline Your <br />
                         <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary-400 to-emerald-400">
-                            Clinic Operations
+                            Workforce Operations
                         </span>
                     </h1>
                     <p className="text-slate-400 text-xl max-w-2xl mx-auto mb-10">
-                        Complete staff management solution for healthcare facilities.
+                        Complete staff management solution for your organization.
                         Schedule, attendance, payroll, and compliance — all in one place.
                     </p>
                     <div className="flex items-center justify-center gap-4">
@@ -60,8 +60,8 @@ export default function Home() {
                         { icon: '📅', title: 'Smart Scheduling', desc: 'Create shifts, manage coverage gaps, handle external locums.' },
                         { icon: '⏰', title: 'Attendance Tracking', desc: 'Clock in/out, automatic status calculation, review workflow.' },
                         { icon: '💰', title: 'Payroll Export', desc: 'Export salary, daily, and hourly payroll with attendance mapping.' },
-                        { icon: '🏥', title: 'Multi-Location', desc: 'Manage multiple clinic locations with per-facility verification.' },
-                        { icon: '✅', title: 'Compliance', desc: 'Organization and facility verification with license tracking.' },
+                        { icon: '🏢', title: 'Multi-Branch', desc: 'Manage multiple branches or locations with unified control.' },
+                        { icon: '✅', title: 'Compliance', desc: 'Organization and facility verification with document tracking.' },
                     ].map((feature, i) => (
                         <div key={i} className="bg-slate-800/50 border border-slate-700 rounded-xl p-6 hover:border-primary-500/50 transition">
                             <div className="text-4xl mb-4">{feature.icon}</div>
@@ -103,6 +103,87 @@ export default function Home() {
                                     Get Started
                                 </Link>
                             </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Testimonials Section */}
+                <div className="mt-32">
+                    <h2 className="text-3xl font-bold text-white text-center mb-4">What Our Users Say</h2>
+                    <p className="text-slate-400 text-center mb-12">Trusted by organizations across East Africa</p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                        {[
+                            {
+                                name: 'Sarah Njeri',
+                                role: 'HR Manager, TechCorp Kenya',
+                                rating: 5,
+                                review: 'HURE Core transformed how we manage our 50+ staff. The payroll export feature alone saves us hours every month!'
+                            },
+                            {
+                                name: 'James Ochieng',
+                                role: 'Operations Director, FastRetail',
+                                rating: 5,
+                                review: 'Finally, a system that handles multi-branch scheduling seamlessly. Our staff love the easy clock-in feature.'
+                            },
+                            {
+                                name: 'Mary Wambui',
+                                role: 'Business Owner, Mama Hospitality',
+                                rating: 4,
+                                review: 'Simple to set up and use. The leave management and attendance tracking are exactly what we needed.'
+                            },
+                        ].map((testimonial, i) => (
+                            <div key={i} className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
+                                <div className="flex gap-1 mb-4">
+                                    {[...Array(5)].map((_, idx) => (
+                                        <span key={idx} className={idx < testimonial.rating ? 'text-yellow-400' : 'text-slate-600'}>★</span>
+                                    ))}
+                                </div>
+                                <p className="text-slate-300 mb-4 italic">"{testimonial.review}"</p>
+                                <div>
+                                    <div className="text-white font-medium">{testimonial.name}</div>
+                                    <div className="text-slate-500 text-sm">{testimonial.role}</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* FAQ Section */}
+                <div className="mt-32">
+                    <h2 className="text-3xl font-bold text-white text-center mb-4">Frequently Asked Questions</h2>
+                    <p className="text-slate-400 text-center mb-12">Everything you need to know about HURE Core</p>
+                    <div className="max-w-3xl mx-auto space-y-4">
+                        {[
+                            {
+                                q: 'How quickly can I get started?',
+                                a: 'You can sign up and start adding your staff in under 5 minutes. Our onboarding process is simple and intuitive.'
+                            },
+                            {
+                                q: 'Can I manage multiple branches or locations?',
+                                a: 'Yes! Our Professional and Enterprise plans support multiple locations with unified dashboard and reporting.'
+                            },
+                            {
+                                q: 'How does attendance tracking work?',
+                                a: 'Staff can clock in/out from their devices. The system automatically calculates hours worked, tracks partial days, and flags absences.'
+                            },
+                            {
+                                q: 'Can I export payroll data?',
+                                a: 'Absolutely. Export detailed payroll reports including salaried, hourly, and daily staff with just one click.'
+                            },
+                            {
+                                q: 'Is my data secure?',
+                                a: 'Yes. We use industry-standard encryption and your data is stored securely in cloud infrastructure with regular backups.'
+                            },
+                        ].map((faq, i) => (
+                            <details key={i} className="group bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
+                                <summary className="flex items-center justify-between p-4 cursor-pointer text-white font-medium hover:bg-slate-700/50 transition">
+                                    {faq.q}
+                                    <span className="text-primary-400 group-open:rotate-180 transition-transform">▼</span>
+                                </summary>
+                                <div className="px-4 pb-4 text-slate-400">
+                                    {faq.a}
+                                </div>
+                            </details>
                         ))}
                     </div>
                 </div>

@@ -126,12 +126,18 @@ export default function EmployeeDashboard() {
                 }
 
                 // Fetch pending leave approvals
+                console.log('📋 Fetching pending leave for clinic:', clinicId)
                 const pendingRes = await fetch(`/api/clinics/${clinicId}/leave/pending`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 })
+                console.log('📋 Pending leave response status:', pendingRes.status)
                 if (pendingRes.ok) {
                     const data = await pendingRes.json()
+                    console.log('📋 Pending leave data:', data)
                     setPendingLeaveApprovals(data.requests || [])
+                } else {
+                    const err = await pendingRes.text()
+                    console.error('📋 Pending leave error:', err)
                 }
             }
         } catch (err) {
@@ -144,6 +150,75 @@ export default function EmployeeDashboard() {
     const handleLogout = () => {
         logout()
         navigate('/login')
+    }
+
+    const handleAcceptShift = async (blockId) => {
+        const token = localStorage.getItem('hure_token')
+        try {
+            const res = await fetch(`/api/employee/schedule/${blockId}/accept`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            })
+            if (res.ok) {
+                alert('Shift accepted!')
+                fetchData()
+            } else {
+                const err = await res.json()
+                alert(err.error || 'Failed to accept shift')
+            }
+        } catch (err) {
+            console.error('Accept shift error:', err)
+            alert('Failed to accept shift')
+        }
+    }
+
+    const handleClockIn = async () => {
+        const token = localStorage.getItem('hure_token')
+        try {
+            const res = await fetch('/api/employee/attendance/clock-in', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            })
+            if (res.ok) {
+                alert('Clocked in!')
+                fetchData()
+            } else {
+                const err = await res.json()
+                alert(err.error || 'Failed to clock in')
+            }
+        } catch (err) {
+            console.error('Clock in error:', err)
+            alert('Failed to clock in')
+        }
+    }
+
+    const handleClockOut = async () => {
+        const token = localStorage.getItem('hure_token')
+        try {
+            const res = await fetch('/api/employee/attendance/clock-out', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }
+            })
+            if (res.ok) {
+                alert('Clocked out!')
+                fetchData()
+            } else {
+                const err = await res.json()
+                alert(err.error || 'Failed to clock out')
+            }
+        } catch (err) {
+            console.error('Clock out error:', err)
+            alert('Failed to clock out')
+        }
     }
 
     // Format helpers
@@ -282,7 +357,10 @@ export default function EmployeeDashboard() {
                                     </div>
                                     <div className="text-xs text-slate-400">{shift.role_required}</div>
                                 </div>
-                                <button className="px-3 py-1 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-lg">
+                                <button
+                                    onClick={() => handleAcceptShift(shift.id)}
+                                    className="px-3 py-1 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-lg"
+                                >
                                     Accept Shift
                                 </button>
                             </div>
@@ -672,12 +750,18 @@ export default function EmployeeDashboard() {
                     </div>
                     <div className="flex gap-2">
                         {!todayAttendance?.clock_in && (
-                            <button className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg">
+                            <button
+                                onClick={handleClockIn}
+                                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg"
+                            >
                                 Clock In
                             </button>
                         )}
                         {todayAttendance?.clock_in && !todayAttendance?.clock_out && (
-                            <button className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg">
+                            <button
+                                onClick={handleClockOut}
+                                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg"
+                            >
                                 Clock Out
                             </button>
                         )}
@@ -740,8 +824,34 @@ export default function EmployeeDashboard() {
 
         const handleSubmit = async (e) => {
             e.preventDefault()
-            alert('Leave request submitted!')
-            setShowForm(false)
+            const token = localStorage.getItem('hure_token')
+            try {
+                const res = await fetch('/api/employee/leave', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        leaveType: leaveForm.type,
+                        startDate: leaveForm.startDate,
+                        endDate: leaveForm.endDate,
+                        reason: leaveForm.reason
+                    })
+                })
+                if (res.ok) {
+                    alert('Leave request submitted successfully!')
+                    setShowForm(false)
+                    setLeaveForm({ type: 'annual', startDate: '', endDate: '', reason: '' })
+                    fetchData() // Refresh data to show new request
+                } else {
+                    const err = await res.json()
+                    alert(err.error || 'Failed to submit leave request')
+                }
+            } catch (err) {
+                console.error('Leave submit error:', err)
+                alert('Failed to submit leave request')
+            }
         }
 
         return (
@@ -899,6 +1009,276 @@ export default function EmployeeDashboard() {
     )
 
     // ============================================
+    // PAYROLL VIEW (Payroll Officer)
+    // ============================================
+
+    const PayrollView = () => {
+        const [activeTab, setActiveTab] = useState('salaried')
+        const [dateRange, setDateRange] = useState({ start: '', end: '' })
+        const [allStaff, setAllStaff] = useState([])
+        const [payrollStats, setPayrollStats] = useState({})
+        const [loadingStats, setLoadingStats] = useState(false)
+
+        // Fetch all staff on mount
+        useEffect(() => {
+            const fetchStaff = async () => {
+                const clinicId = localStorage.getItem('hure_clinic_id')
+                try {
+                    const res = await fetch(`/api/clinics/${clinicId}/staff?includeOwner=true`, {
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                    })
+                    if (res.ok) {
+                        const data = await res.json()
+                        setAllStaff(data.data || [])
+                    }
+                } catch (err) {
+                    console.error('Fetch staff error:', err)
+                }
+            }
+            fetchStaff()
+        }, [])
+
+        // Fetch payroll stats when date range changes
+        useEffect(() => {
+            const fetchPayrollStats = async () => {
+                if (!dateRange.start || !dateRange.end) return
+                const clinicId = localStorage.getItem('hure_clinic_id')
+                setLoadingStats(true)
+                try {
+                    const res = await fetch(`/api/clinics/${clinicId}/payroll-stats?startDate=${dateRange.start}&endDate=${dateRange.end}`, {
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                    })
+                    if (res.ok) {
+                        const data = await res.json()
+                        setPayrollStats(data.stats || {})
+                    }
+                } catch (err) {
+                    console.error('Fetch payroll stats error:', err)
+                } finally {
+                    setLoadingStats(false)
+                }
+            }
+            fetchPayrollStats()
+        }, [dateRange.start, dateRange.end])
+
+        // Filter staff by pay type
+        const salariedStaff = allStaff.filter(s => !s.pay_type || s.pay_type === 'monthly')
+        const dailyStaff = allStaff.filter(s => s.pay_type === 'daily' || s.pay_type === 'hourly')
+
+        const getStats = (userId) => payrollStats[userId] || { full_days: 0, half_days: 0, absent_days: 0, total_hours: 0 }
+
+        const calculateGross = (staff) => {
+            const stats = getStats(staff.id)
+            const rate = staff.pay_rate || 0
+            return (stats.full_days * rate) + (stats.half_days * rate * 0.5)
+        }
+
+        // Export payroll to CSV
+        const exportPayrollCSV = () => {
+            const allStaffList = [...salariedStaff, ...dailyStaff]
+            const headers = ['Staff Name', 'Role', 'Pay Type', 'Full Days', 'Half Days', 'Rate (KSh)', 'Gross (KSh)']
+            const rows = allStaffList.map(s => {
+                const stats = getStats(s.id)
+                const isSalaried = !s.pay_type || s.pay_type === 'monthly'
+                const gross = isSalaried ? (s.pay_rate || 0) : calculateGross(s)
+                return [
+                    `${s.first_name} ${s.last_name}`,
+                    s.job_title || 'Staff',
+                    s.pay_type || 'monthly',
+                    stats.full_days,
+                    stats.half_days,
+                    s.pay_rate || 0,
+                    gross
+                ]
+            })
+            const csvContent = [
+                `Payroll Report: ${dateRange.start || 'N/A'} to ${dateRange.end || 'N/A'}`,
+                '',
+                headers.join(','),
+                ...rows.map(row => row.join(','))
+            ].join('\n')
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+            const link = document.createElement('a')
+            link.href = URL.createObjectURL(blob)
+            link.download = `payroll_${dateRange.start}_to_${dateRange.end}.csv`
+            link.click()
+        }
+
+        return (
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h1 className="text-xl font-bold">Payroll Export</h1>
+                        <p className="text-slate-500 text-sm">Calculate and export payroll based on attendance</p>
+                    </div>
+                    <button
+                        onClick={exportPayrollCSV}
+                        disabled={!dateRange.start || !dateRange.end}
+                        className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg disabled:opacity-50"
+                    >
+                        Export Payroll
+                    </button>
+                </div>
+
+                {/* Date Range Picker */}
+                <Card>
+                    <div className="flex items-center gap-4 flex-wrap">
+                        <div>
+                            <label className="block text-xs text-slate-500 mb-1">Date Range</label>
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="date"
+                                    value={dateRange.start}
+                                    onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
+                                    className="px-3 py-2 border rounded-lg text-sm"
+                                />
+                                <span className="text-slate-400">→</span>
+                                <input
+                                    type="date"
+                                    value={dateRange.end}
+                                    onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
+                                    className="px-3 py-2 border rounded-lg text-sm"
+                                />
+                            </div>
+                        </div>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => {
+                                    const now = new Date()
+                                    const start = new Date(now.getFullYear(), now.getMonth(), 1)
+                                    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+                                    setDateRange({ start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] })
+                                }}
+                                className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50"
+                            >
+                                This Month
+                            </button>
+                            <button
+                                onClick={() => {
+                                    const now = new Date()
+                                    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+                                    const end = new Date(now.getFullYear(), now.getMonth(), 0)
+                                    setDateRange({ start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] })
+                                }}
+                                className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50"
+                            >
+                                Last Month
+                            </button>
+                        </div>
+                    </div>
+                </Card>
+
+                {/* Info Panel */}
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+                    <strong>ℹ️ How payroll is calculated:</strong> Payroll is derived from reviewed attendance records within the selected date range.
+                    <div className="mt-2 text-xs">
+                        • <strong>Full Day</strong> = Full shift worked | • <strong>Half Day</strong> = Partial attendance | • <strong>Absent</strong> = No pay (unless salaried) | • <strong>Overtime</strong> = Hours beyond scheduled shift
+                    </div>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex gap-2 border-b">
+                    <button
+                        onClick={() => setActiveTab('salaried')}
+                        className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'salaried' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
+                    >
+                        Salaried Staff ({salariedStaff.length})
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('daily')}
+                        className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'daily' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
+                    >
+                        Daily / Casual ({dailyStaff.length})
+                    </button>
+                </div>
+
+                {/* Salaried Staff Tab */}
+                {activeTab === 'salaried' && (
+                    <Card title="Monthly Salaried Staff">
+                        <p className="text-sm text-slate-500 mb-4">
+                            Attendance is for reporting purposes. Salary is not auto-deducted for absences.
+                        </p>
+                        {salariedStaff.length === 0 ? (
+                            <div className="text-center py-8 text-slate-500">No salaried staff found.</div>
+                        ) : (
+                            <table className="w-full">
+                                <thead className="bg-slate-50">
+                                    <tr>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Days Present</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Absent</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Late</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Monthly Salary</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {salariedStaff.map(s => {
+                                        const stats = getStats(s.id)
+                                        const daysPresent = stats.full_days + stats.half_days
+                                        return (
+                                            <tr key={s.id} className="border-t">
+                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
+                                                <td className="p-3">{s.job_title || 'Staff'}</td>
+                                                <td className="p-3">{loadingStats ? '...' : daysPresent}</td>
+                                                <td className="p-3">{loadingStats ? '...' : stats.absent_days}</td>
+                                                <td className="p-3">-</td>
+                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                                <td className="p-3 font-medium">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
+                    </Card>
+                )}
+
+                {/* Daily Staff Tab */}
+                {activeTab === 'daily' && (
+                    <Card title="Daily / Casual Staff">
+                        <p className="text-sm text-slate-500 mb-4">
+                            Pay calculated as: Full day = 1 unit × daily rate, Half day = 0.5 unit × daily rate
+                        </p>
+                        {dailyStaff.length === 0 ? (
+                            <div className="text-center py-8 text-slate-500">
+                                No daily/casual staff found. Staff pay types are set in Staff module.
+                            </div>
+                        ) : (
+                            <table className="w-full">
+                                <thead className="bg-slate-50">
+                                    <tr>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Full Days</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Half Days</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {dailyStaff.map(s => {
+                                        const stats = getStats(s.id)
+                                        return (
+                                            <tr key={s.id} className="border-t">
+                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
+                                                <td className="p-3">{loadingStats ? '...' : stats.full_days}</td>
+                                                <td className="p-3">{loadingStats ? '...' : stats.half_days}</td>
+                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                                <td className="p-3 font-medium">KSh {loadingStats ? '...' : calculateGross(s).toLocaleString()}</td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
+                    </Card>
+                )}
+            </div>
+        )
+    }
+
+    // ============================================
     // MAIN RENDER
     // ============================================
 
@@ -927,6 +1307,8 @@ export default function EmployeeDashboard() {
                 return hasPermission('staff_list') ? <StaffListView /> : <LockedView feature="Staff Directory" />
             case 'approve_leave':
                 return hasPermission('approve_leave') ? <ApproveLeaveView /> : <LockedView feature="Leave Approvals" />
+            case 'payroll':
+                return hasPermission('payroll') ? <PayrollView /> : <LockedView feature="Payroll" />
 
             default: return <MyScheduleView />
         }
@@ -1008,6 +1390,13 @@ export default function EmployeeDashboard() {
                                     onClick={() => { setView('approve_leave'); setMobileMenuOpen(false) }}
                                     locked={!hasPermission('approve_leave')}
                                     badge={pendingLeaveApprovals.length}
+                                />
+                                <NavBtn
+                                    icon="💰"
+                                    label="Payroll"
+                                    active={view === 'payroll'}
+                                    onClick={() => { setView('payroll'); setMobileMenuOpen(false) }}
+                                    locked={!hasPermission('payroll')}
                                 />
                             </>
                         )}

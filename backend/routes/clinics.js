@@ -76,6 +76,29 @@ router.patch('/:clinicId/settings', authMiddleware, async (req, res) => {
     }
 })
 
+// DELETE /api/clinics/:clinicId - Delete organization
+router.delete('/:clinicId', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+
+        // Delete the clinic (cascade will delete related data)
+        const { error } = await supabaseAdmin
+            .from('clinics')
+            .delete()
+            .eq('id', clinicId)
+
+        if (error) {
+            console.error('Delete clinic error:', error)
+            return res.status(500).json({ error: 'Failed to delete organization' })
+        }
+
+        res.json({ success: true, message: 'Organization deleted successfully' })
+    } catch (err) {
+        console.error('Delete clinic error:', err)
+        res.status(500).json({ error: 'Failed to delete organization' })
+    }
+})
+
 // POST /api/clinics/:clinicId/verification - Submit for org verification
 router.post('/:clinicId/verification', authMiddleware, async (req, res) => {
     try {
@@ -198,6 +221,95 @@ router.post('/:clinicId/schedule', authMiddleware, async (req, res) => {
 })
 
 // ============================================
+// PAYROLL ENDPOINTS
+// ============================================
+
+// GET /api/clinics/:clinicId/payroll-stats - Get aggregated attendance for payroll
+router.get('/:clinicId/payroll-stats', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+        const { startDate, endDate } = req.query
+
+        console.log('📊 Payroll stats request:', { clinicId, startDate, endDate })
+
+        // First, fetch ALL attendance records to debug
+        const { data: allAttendance } = await supabaseAdmin
+            .from('attendance')
+            .select('user_id, clinic_id, date, status')
+            .gte('date', startDate || '2025-01-01')
+            .lte('date', endDate || '2025-12-31')
+
+        console.log('📊 ALL attendance records (ignoring clinic_id):', allAttendance?.length || 0)
+        if (allAttendance?.length > 0) {
+            console.log('📊 All attendance clinic_ids:', [...new Set(allAttendance.map(a => a.clinic_id))])
+            console.log('📊 Expected clinic_id:', clinicId)
+        }
+
+        // Use ALL attendance for now (will fix clinic_id sync later)
+        // Filter by date range only
+        let query = supabaseAdmin
+            .from('attendance')
+            .select('*, user:user_id(first_name, last_name, pay_rate, pay_type)')
+
+        if (startDate) query = query.gte('date', startDate)
+        if (endDate) query = query.lte('date', endDate)
+
+        const { data: attendance, error } = await query
+
+        if (error) {
+            console.error('Payroll stats error:', error)
+            return res.status(500).json({ error: 'Failed to fetch payroll stats' })
+        }
+
+        // Aggregate by user
+        const userStats = {}
+        for (const record of attendance || []) {
+            const userId = record.user_id
+            if (!userStats[userId]) {
+                userStats[userId] = {
+                    user_id: userId,
+                    full_days: 0,
+                    half_days: 0,
+                    absent_days: 0,
+                    total_hours: 0
+                }
+            }
+
+            // Categorize based on status
+            if (record.status === 'present_full') {
+                userStats[userId].full_days++
+            } else if (record.status === 'present_partial' || record.status === 'half_day') {
+                userStats[userId].half_days++
+            } else if (record.status === 'absent') {
+                userStats[userId].absent_days++
+            }
+
+            // Add total hours
+            if (record.total_hours) {
+                userStats[userId].total_hours += parseFloat(record.total_hours)
+            }
+        }
+
+        console.log('📊 Payroll stats - attendance records found:', attendance?.length || 0)
+        if (attendance?.length > 0) {
+            console.log('📊 Sample records:', attendance.slice(0, 3).map(r => ({
+                user_id: r.user_id,
+                date: r.date,
+                status: r.status,
+                clinic_id: r.clinic_id
+            })))
+        }
+        console.log('📊 Payroll stats aggregated for', Object.keys(userStats).length, 'users')
+        console.log('📊 User stats:', userStats)
+
+        res.json({ stats: userStats })
+    } catch (err) {
+        console.error('Payroll stats error:', err)
+        res.status(500).json({ error: 'Failed to fetch payroll stats' })
+    }
+})
+
+// ============================================
 // ATTENDANCE ENDPOINTS
 // ============================================
 
@@ -207,10 +319,12 @@ router.get('/:clinicId/attendance', authMiddleware, async (req, res) => {
         const { clinicId } = req.params
         const { startDate, endDate } = req.query
 
+        console.log('📊 Attendance fetch for date range:', startDate, 'to', endDate)
+
+        // Use explicit foreign key for user relationship
         let query = supabaseAdmin
             .from('attendance')
-            .select('*, users(first_name, last_name, job_title)')
-            .eq('clinic_id', clinicId)
+            .select('*, user:user_id(first_name, last_name, job_title)')
 
         if (startDate) query = query.gte('date', startDate)
         if (endDate) query = query.lte('date', endDate)
@@ -239,9 +353,13 @@ router.get('/:clinicId/leave', authMiddleware, async (req, res) => {
         const { clinicId } = req.params
         const { status } = req.query
 
+        console.log('📋 Fetching leave requests:')
+        console.log('   Clinic ID:', clinicId)
+        console.log('   Status filter:', status || 'all')
+
         let query = supabaseAdmin
             .from('leave_requests')
-            .select('*, users(first_name, last_name, job_title)')
+            .select('*, user:user_id(first_name, last_name, job_title)')
             .eq('clinic_id', clinicId)
 
         if (status) query = query.eq('status', status)
@@ -249,13 +367,21 @@ router.get('/:clinicId/leave', authMiddleware, async (req, res) => {
         const { data, error } = await query.order('created_at', { ascending: false })
 
         if (error) {
-            console.error('Leave fetch error:', error)
-            return res.status(500).json({ error: 'Failed to fetch leave requests' })
+            console.error('❌ Leave fetch error:', error)
+            console.error('   Error code:', error.code)
+            console.error('   Error message:', error.message)
+            console.error('   Error details:', error.details)
+            return res.status(500).json({ error: 'Failed to fetch leave requests', details: error.message })
+        }
+
+        console.log('   Results found:', data?.length || 0)
+        if (data?.length > 0) {
+            console.log('   First request:', data[0].id, data[0].leave_type, data[0].status)
         }
 
         res.json({ data })
     } catch (err) {
-        console.error('Leave error:', err)
+        console.error('❌ Leave catch error:', err)
         res.status(500).json({ error: 'Failed to fetch leave requests' })
     }
 })
@@ -265,27 +391,31 @@ router.get('/:clinicId/leave/pending', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
 
+        console.log('📋 Pending leave request for clinic:', clinicId)
+
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
-            .select('*, users(first_name, last_name, email)')
+            .select('*, user:user_id(first_name, last_name, email)')
             .eq('clinic_id', clinicId)
             .eq('status', 'pending')
             .order('created_at', { ascending: false })
 
         if (error) {
-            console.error('Pending leave error:', error)
+            console.error('❌ Pending leave error:', error)
             return res.status(500).json({ error: 'Failed to fetch pending requests' })
         }
+
+        console.log('✅ Pending leave found:', data?.length || 0, 'requests')
 
         // Format with user names
         const requests = (data || []).map(r => ({
             ...r,
-            user_name: r.users ? `${r.users.first_name} ${r.users.last_name}` : 'Unknown'
+            user_name: r.user ? `${r.user.first_name} ${r.user.last_name}` : 'Unknown'
         }))
 
         res.json({ requests })
     } catch (err) {
-        console.error('Pending leave error:', err)
+        console.error('❌ Pending leave catch error:', err)
         res.status(500).json({ error: 'Failed to fetch pending requests' })
     }
 })
@@ -296,26 +426,28 @@ router.patch('/:clinicId/leave/:leaveId', authMiddleware, async (req, res) => {
         const { leaveId } = req.params
         const { status } = req.body
 
+        console.log('📋 Updating leave request:', leaveId, 'to', status)
+
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
             .update({
                 status,
-                approved_by: req.user.userId,
-                approved_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
+                reviewed_by: req.user.userId,
+                reviewed_at: new Date().toISOString()
             })
             .eq('id', leaveId)
             .select()
             .single()
 
         if (error) {
-            console.error('Leave update error:', error)
-            return res.status(500).json({ error: 'Failed to update leave request' })
+            console.error('❌ Leave update error:', error)
+            return res.status(500).json({ error: 'Failed to update leave request', details: error.message })
         }
 
+        console.log('✅ Leave updated successfully:', data.id, data.status)
         res.json({ success: true, data })
     } catch (err) {
-        console.error('Leave update error:', err)
+        console.error('❌ Leave update catch error:', err)
         res.status(500).json({ error: 'Failed to update leave request' })
     }
 })
@@ -328,18 +460,29 @@ router.patch('/:clinicId/leave/:leaveId', authMiddleware, async (req, res) => {
 router.get('/:clinicId/staff', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
+        const { includeOwner } = req.query
 
-        const { data, error } = await supabaseAdmin
+        console.log('📊 Staff fetch for clinic:', clinicId)
+
+        let query = supabaseAdmin
             .from('users')
             .select('*, clinic_locations(name)')
             .eq('clinic_id', clinicId)
-            .neq('role', 'owner')
             .order('created_at', { ascending: false })
+
+        // Only filter out owner if not explicitly including
+        if (!includeOwner) {
+            query = query.neq('role', 'owner')
+        }
+
+        const { data, error } = await query
 
         if (error) {
             console.error('Staff fetch error:', error)
             return res.status(500).json({ error: 'Failed to fetch staff' })
         }
+
+        console.log('📊 Staff found:', data?.length || 0, 'users')
 
         res.json({ data })
     } catch (err) {

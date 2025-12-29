@@ -61,10 +61,16 @@ router.get('/schedule', authMiddleware, async (req, res) => {
 
         const { data: available } = await supabaseAdmin
             .from('schedule_blocks')
-            .select('*, clinic_locations(name)')
+            .select('*, clinic_locations(name), schedule_assignments(user_id)')
             .eq('clinic_id', user?.clinic_id)
             .gte('date', today)
-            .limit(10)
+            .limit(20)
+
+        // Filter out shifts the user has already accepted
+        const filteredAvailable = (available || []).filter(shift => {
+            const userAssigned = (shift.schedule_assignments || []).some(a => a.user_id === userId)
+            return !userAssigned
+        })
 
         res.json({
             scheduled: (assignments || []).map(a => ({
@@ -75,7 +81,7 @@ router.get('/schedule', authMiddleware, async (req, res) => {
                 location: a.schedule_blocks?.clinic_locations?.name,
                 status: a.status
             })),
-            available: available || []
+            available: filteredAvailable
         })
     } catch (err) {
         console.error('Get schedule error:', err)
@@ -261,6 +267,17 @@ router.post('/leave', authMiddleware, async (req, res) => {
             .eq('id', userId)
             .single()
 
+        console.log('📋 Creating leave request:')
+        console.log('   User ID:', userId)
+        console.log('   Clinic ID:', user?.clinic_id)
+        console.log('   Leave Type:', leaveType)
+        console.log('   Dates:', startDate, 'to', endDate)
+
+        if (!user?.clinic_id) {
+            console.error('❌ User has no clinic_id!')
+            return res.status(400).json({ error: 'User not associated with a clinic' })
+        }
+
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
             .insert({
@@ -276,13 +293,67 @@ router.post('/leave', authMiddleware, async (req, res) => {
             .single()
 
         if (error) {
+            console.error('❌ Leave create error:', error)
             return res.status(500).json({ error: 'Failed to create leave request' })
         }
 
+        console.log('✅ Leave request created:', data.id)
         res.json({ success: true, data })
     } catch (err) {
         console.error('Create leave error:', err)
         res.status(500).json({ error: 'Failed to create leave request' })
+    }
+})
+
+// POST /api/employee/schedule/:blockId/accept - Accept an available shift
+router.post('/schedule/:blockId/accept', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const { blockId } = req.params
+
+        // Check if shift exists
+        const { data: block, error: blockError } = await supabaseAdmin
+            .from('schedule_blocks')
+            .select('id, clinic_id')
+            .eq('id', blockId)
+            .single()
+
+        if (blockError || !block) {
+            return res.status(404).json({ error: 'Shift not found' })
+        }
+
+        // Check if user is already assigned to this shift
+        const { data: existingAssignment } = await supabaseAdmin
+            .from('schedule_assignments')
+            .select('id')
+            .eq('schedule_block_id', blockId)
+            .eq('user_id', userId)
+            .single()
+
+        if (existingAssignment) {
+            return res.status(400).json({ error: 'You are already assigned to this shift' })
+        }
+
+        // Create assignment
+        const { data, error } = await supabaseAdmin
+            .from('schedule_assignments')
+            .insert({
+                schedule_block_id: blockId,
+                user_id: userId,
+                status: 'confirmed'
+            })
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Accept shift error:', error)
+            return res.status(500).json({ error: 'Failed to accept shift' })
+        }
+
+        res.json({ success: true, data })
+    } catch (err) {
+        console.error('Accept shift error:', err)
+        res.status(500).json({ error: 'Failed to accept shift' })
     }
 })
 
