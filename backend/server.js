@@ -73,8 +73,12 @@ app.use((req, res) => {
     res.status(404).json({ error: 'Not found' })
 })
 
-// Start server
-app.listen(PORT, () => {
-    console.log(`\n🚀 HURE Core Backend running on http://localhost:${PORT}`)
-    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`)
-})
+// Start server if run directly (local development)
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`\n🚀 HURE Core Backend running on http://localhost:${PORT}`)
+        console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`)
+    })
+}
+
+export default app
