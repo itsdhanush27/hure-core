@@ -230,8 +230,11 @@ export default function EmployeeDashboard() {
 
     const formatTime = (timeStr) => {
         if (!timeStr) return '-'
-        const d = new Date(timeStr)
-        return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+        // Handle full ISO dates if passed, otherwise assume HH:mm:ss
+        if (timeStr.includes('T')) {
+            return new Date(timeStr).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+        }
+        return timeStr.slice(0, 5)
     }
 
     // ============================================
@@ -375,50 +378,236 @@ export default function EmployeeDashboard() {
     // TEAM SCHEDULE VIEW (Manager)
     // ============================================
 
-    const TeamScheduleView = () => (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <h1 className="text-xl font-bold">Team Schedule</h1>
-                {hasPermission('manage_schedule') && (
-                    <button
-                        onClick={() => setView('manage_schedule')}
-                        className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm"
-                    >
-                        + Create Shift
-                    </button>
+    const TeamScheduleView = () => {
+        const [showManageCoverage, setShowManageCoverage] = useState(false)
+        const [selectedShift, setSelectedShift] = useState(null)
+
+        const handleDeleteShift = async (shiftId) => {
+            if (!confirm('Are you sure you want to delete this shift?')) return
+            const token = localStorage.getItem('hure_token')
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedules/${shiftId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                if (res.ok) {
+                    // Update local state
+                    setTeamSchedules(prev => prev.filter(s => s.id !== shiftId))
+                    alert('Shift deleted successfully')
+                } else {
+                    alert('Failed to delete shift')
+                }
+            } catch (err) {
+                console.error('Delete shift error:', err)
+            }
+        }
+
+        const handleAssignStaff = async (staffId) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
+            try {
+                // Determine if this is a pending request or direct assignment
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/assign`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ userId: staffId })
+                })
+                if (res.ok) {
+                    const { data: newAssignment } = await res.json()
+                    // Update selected shift locally
+                    setSelectedShift(prev => ({
+                        ...prev,
+                        schedule_assignments: [...(prev.schedule_assignments || []), newAssignment]
+                    }))
+                    // Update main list
+                    fetchData()
+                }
+            } catch (err) {
+                console.error('Assign staff error:', err)
+                alert('Failed to assign staff')
+            }
+        }
+
+        const handleUnassignStaff = async (assignmentId) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/unassign/${assignmentId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                if (res.ok) {
+                    // Update selected shift locally
+                    setSelectedShift(prev => ({
+                        ...prev,
+                        schedule_assignments: prev.schedule_assignments.filter(a => a.id !== assignmentId)
+                    }))
+                    // Update main list
+                    fetchData()
+                }
+            } catch (err) {
+                console.error('Unassign staff error:', err)
+            }
+        }
+
+        return (
+            <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h1 className="text-xl font-bold">Team Schedule</h1>
+                        <p className="text-slate-500 text-sm">Manage shifts and coverage</p>
+                    </div>
+                    {hasPermission('manage_schedule') && (
+                        <button
+                            onClick={() => setView('manage_schedule')}
+                            className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm"
+                        >
+                            + Create Shift
+                        </button>
+                    )}
+                </div>
+
+                <Card>
+                    {teamSchedules.length === 0 ? (
+                        <div className="text-center py-8 text-slate-500">
+                            No team shifts scheduled.
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {teamSchedules.map(shift => {
+                                const assignedCount = shift.schedule_assignments?.length || 0
+                                const progress = Math.min((assignedCount / shift.headcount_required) * 100, 100)
+                                const isFullyStaffed = assignedCount >= shift.headcount_required
+
+                                return (
+                                    <div key={shift.id} className="p-4 rounded-xl border border-slate-200 hover:border-primary-200 transition bg-white block text-left">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <span className="font-semibold text-slate-800">{formatDate(shift.date)}</span>
+                                            {hasPermission('manage_schedule') && (
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handleDeleteShift(shift.id) }}
+                                                    className="text-slate-400 hover:text-red-500 px-1"
+                                                >
+                                                    ×
+                                                </button>
+                                            )}
+                                        </div>
+                                        <div className="text-sm text-slate-600 mb-3">
+                                            {formatTime(shift.start_time)} - {formatTime(shift.end_time)}
+                                        </div>
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="text-xs bg-slate-100 px-2 py-0.5 rounded text-slate-600">
+                                                {shift.clinic_locations?.name || 'Main'}
+                                            </span>
+                                            <span className="text-xs bg-blue-50 px-2 py-0.5 rounded text-blue-600">
+                                                {shift.role_required || 'Any'}
+                                            </span>
+                                        </div>
+                                        <div className="mt-3">
+                                            <div className="flex justify-between text-xs mb-1">
+                                                <span className={isFullyStaffed ? 'text-green-600' : 'text-slate-500'}>
+                                                    {assignedCount} / {shift.headcount_required} Staff
+                                                </span>
+                                                <span className="text-slate-400">{Math.round(progress)}%</span>
+                                            </div>
+                                            <div className="w-full bg-slate-100 rounded-full h-1.5">
+                                                <div
+                                                    className={`h-1.5 rounded-full ${isFullyStaffed ? 'bg-green-500' : 'bg-primary-500'}`}
+                                                    style={{ width: `${progress}%` }}
+                                                ></div>
+                                            </div>
+                                        </div>
+                                        {hasPermission('manage_schedule') && (
+                                            <button
+                                                onClick={() => { setSelectedShift(shift); setShowManageCoverage(true) }}
+                                                className="mt-3 w-full py-1.5 text-xs font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 rounded-lg"
+                                            >
+                                                Manage Coverage
+                                            </button>
+                                        )}
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    )}
+                </Card>
+
+                {/* Manage Coverage Modal */}
+                {showManageCoverage && selectedShift && (
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[80vh] overflow-hidden">
+                            <div className="p-4 border-b flex items-center justify-between">
+                                <h2 className="text-lg font-bold">Manage coverage</h2>
+                                <button
+                                    onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }}
+                                    className="text-slate-400 hover:text-slate-600 text-2xl"
+                                >×</button>
+                            </div>
+                            <div className="p-4 bg-slate-50 border-b">
+                                <div className="font-medium">{formatDate(selectedShift.date)} · {formatTime(selectedShift.start_time)} - {formatTime(selectedShift.end_time)}</div>
+                                <div className="text-sm text-slate-500">Location: {selectedShift.clinic_locations?.name} · Role: {selectedShift.role_required || 'Any'}</div>
+                                <div className="text-sm text-slate-500">
+                                    Required: {selectedShift.headcount_required} ·
+                                    Assigned: {selectedShift.schedule_assignments?.filter(a => a.status === 'confirmed').length || 0} ·
+                                    Pending: {selectedShift.schedule_assignments?.filter(a => a.status === 'pending').length || 0}
+                                </div>
+                            </div>
+                            <div className="p-4 overflow-y-auto max-h-[50vh]">
+                                {selectedShift.schedule_assignments?.length > 0 && (
+                                    <div className="mb-4">
+                                        <h3 className="text-sm font-medium text-slate-700 mb-2">Currently Assigned / Pending</h3>
+                                        <div className="space-y-2">
+                                            {selectedShift.schedule_assignments.map(a => (
+                                                <div key={a.id} className={`flex items-center justify-between p-2 rounded-lg border ${a.status === 'pending' ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200'
+                                                    }`}>
+                                                    <div className="flex flex-col">
+                                                        <span className={`font-medium ${a.status === 'pending' ? 'text-amber-800' : 'text-green-800'}`}>
+                                                            {a.users?.first_name} {a.users?.last_name}
+                                                        </span>
+                                                        <span className="text-xs text-slate-500">
+                                                            {a.status === 'pending' ? '⏳ Pending Acceptance' : '✓ Confirmed'}
+                                                        </span>
+                                                    </div>
+                                                    <button onClick={() => handleUnassignStaff(a.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <div>
+                                    <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
+                                    <div className="space-y-2">
+                                        {staffList
+                                            .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                            .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
+                                            .map(staff => (
+                                                <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
+                                                    <div>
+                                                        <span className="font-medium">{staff.first_name} {staff.last_name}</span>
+                                                        <span className="text-sm text-slate-500 ml-2">{staff.job_title}</span>
+                                                    </div>
+                                                    <button onClick={() => handleAssignStaff(staff.id)} className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg">Assign</button>
+                                                </div>
+                                            ))}
+                                        {staffList.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app')).length === 0 && (
+                                            <div className="text-center text-sm text-slate-400 py-2">No available staff found</div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="p-4 border-t">
+                                <button onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }} className="w-full px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg">Close</button>
+                            </div>
+                        </div>
+                    </div>
                 )}
             </div>
-
-            <Card title="All Team Shifts">
-                {teamSchedules.length === 0 ? (
-                    <div className="text-center py-8 text-slate-500">
-                        No team shifts scheduled.
-                    </div>
-                ) : (
-                    <table className="w-full">
-                        <thead className="bg-slate-50">
-                            <tr>
-                                <th className="text-left p-3 text-sm font-medium text-slate-600">Date</th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-600">Time</th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-600">Assigned To</th>
-                                <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {teamSchedules.map((shift, i) => (
-                                <tr key={i} className="border-t">
-                                    <td className="p-3">{formatDate(shift.date)}</td>
-                                    <td className="p-3">{shift.start_time} – {shift.end_time}</td>
-                                    <td className="p-3">{shift.assigned_name || 'Unassigned'}</td>
-                                    <td className="p-3"><StatusBadge status={shift.status || 'scheduled'} /></td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                )}
-            </Card>
-        </div>
-    )
+        )
+    }
 
     // ============================================
     // MANAGE SCHEDULE VIEW (Create Shifts)
