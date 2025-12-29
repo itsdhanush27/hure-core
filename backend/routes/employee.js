@@ -44,7 +44,7 @@ router.get('/schedule', authMiddleware, async (req, res) => {
         const userId = req.user.userId
         const today = new Date().toISOString().split('T')[0]
 
-        // Get scheduled shifts for this user
+        // Get ALL assignments for this user (both pending and confirmed)
         const { data: assignments } = await supabaseAdmin
             .from('schedule_assignments')
             .select('*, schedule_blocks(*, clinic_locations(name))')
@@ -52,28 +52,44 @@ router.get('/schedule', authMiddleware, async (req, res) => {
             .gte('schedule_blocks.date', today)
             .order('schedule_blocks(date)', { ascending: true })
 
-        // Get available shifts (unassigned, at user's location)
+        // Separate confirmed (scheduled) from pending (available/needs acceptance)
+        const confirmedAssignments = (assignments || []).filter(a => a.status === 'confirmed')
+        const pendingAssignments = (assignments || []).filter(a => a.status === 'pending')
+
+        // Get user's clinic
         const { data: user } = await supabaseAdmin
             .from('users')
             .select('clinic_id, location_id')
             .eq('id', userId)
             .single()
 
-        const { data: available } = await supabaseAdmin
+        // Get unassigned shifts (open shifts anyone can pick up)
+        const { data: openShifts } = await supabaseAdmin
             .from('schedule_blocks')
             .select('*, clinic_locations(name), schedule_assignments(user_id)')
             .eq('clinic_id', user?.clinic_id)
             .gte('date', today)
             .limit(20)
 
-        // Filter out shifts the user has already accepted
-        const filteredAvailable = (available || []).filter(shift => {
+        // Filter out shifts the user has already accepted/assigned
+        const unassignedShifts = (openShifts || []).filter(shift => {
             const userAssigned = (shift.schedule_assignments || []).some(a => a.user_id === userId)
             return !userAssigned
         })
 
+        // Combine pending assignments (shift requests) with open shifts for "Available"
+        const pendingShifts = pendingAssignments.map(a => ({
+            id: a.schedule_block_id,
+            date: a.schedule_blocks?.date,
+            start_time: a.schedule_blocks?.start_time,
+            end_time: a.schedule_blocks?.end_time,
+            location: a.schedule_blocks?.clinic_locations?.name,
+            role_required: a.schedule_blocks?.role_required,
+            isAssigned: true  // Mark as assigned request (needs accept)
+        }))
+
         res.json({
-            scheduled: (assignments || []).map(a => ({
+            scheduled: confirmedAssignments.map(a => ({
                 id: a.id,
                 date: a.schedule_blocks?.date,
                 start_time: a.schedule_blocks?.start_time,
@@ -81,7 +97,7 @@ router.get('/schedule', authMiddleware, async (req, res) => {
                 location: a.schedule_blocks?.clinic_locations?.name,
                 status: a.status
             })),
-            available: filteredAvailable
+            available: [...pendingShifts, ...unassignedShifts]  // Pending first, then open
         })
     } catch (err) {
         console.error('Get schedule error:', err)
@@ -322,19 +338,37 @@ router.post('/schedule/:blockId/accept', authMiddleware, async (req, res) => {
             return res.status(404).json({ error: 'Shift not found' })
         }
 
-        // Check if user is already assigned to this shift
+        // Check if user has a pending assignment for this shift
         const { data: existingAssignment } = await supabaseAdmin
             .from('schedule_assignments')
-            .select('id')
+            .select('id, status')
             .eq('schedule_block_id', blockId)
             .eq('user_id', userId)
             .single()
 
         if (existingAssignment) {
-            return res.status(400).json({ error: 'You are already assigned to this shift' })
+            if (existingAssignment.status === 'confirmed') {
+                return res.status(400).json({ error: 'You are already confirmed for this shift' })
+            }
+
+            // Update pending assignment to confirmed
+            const { data, error } = await supabaseAdmin
+                .from('schedule_assignments')
+                .update({ status: 'confirmed' })
+                .eq('id', existingAssignment.id)
+                .select()
+                .single()
+
+            if (error) {
+                console.error('Accept shift error:', error)
+                return res.status(500).json({ error: 'Failed to accept shift' })
+            }
+
+            console.log('✅ Shift accepted (pending -> confirmed):', existingAssignment.id)
+            return res.json({ success: true, data })
         }
 
-        // Create assignment
+        // No existing assignment - create new confirmed assignment (self-assignment)
         const { data, error } = await supabaseAdmin
             .from('schedule_assignments')
             .insert({
@@ -350,6 +384,7 @@ router.post('/schedule/:blockId/accept', authMiddleware, async (req, res) => {
             return res.status(500).json({ error: 'Failed to accept shift' })
         }
 
+        console.log('✅ Shift self-assigned:', data.id)
         res.json({ success: true, data })
     } catch (err) {
         console.error('Accept shift error:', err)

@@ -76,9 +76,9 @@ export default function Home() {
                     <h2 className="text-3xl font-bold text-white text-center mb-12">Simple, Transparent Pricing</h2>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                         {[
-                            { name: 'Essential', price: 'KES 2,500', locations: 1, staff: 10, admins: 2, popular: false },
-                            { name: 'Professional', price: 'KES 5,000', locations: 2, staff: 30, admins: 5, popular: true },
-                            { name: 'Enterprise', price: 'KES 10,000', locations: 5, staff: 75, admins: 10, popular: false },
+                            { name: 'Essential', price: 'KES 8,000', locations: 1, staff: 10, admins: 2, popular: false },
+                            { name: 'Professional', price: 'KES 15,000', locations: 2, staff: 30, admins: 5, popular: true },
+                            { name: 'Enterprise', price: 'KES 25,000', locations: 5, staff: 75, admins: 10, popular: false },
                         ].map((plan, i) => (
                             <div key={i} className={`relative rounded-xl p-6 ${plan.popular ? 'bg-primary-600 ring-2 ring-primary-400' : 'bg-slate-800/50 border border-slate-700'}`}>
                                 {plan.popular && (
@@ -93,7 +93,7 @@ export default function Home() {
                                 <ul className={`space-y-2 mb-6 ${plan.popular ? 'text-primary-100' : 'text-slate-400'}`}>
                                     <li>✓ {plan.locations} Location{plan.locations > 1 ? 's' : ''}</li>
                                     <li>✓ {plan.staff} Staff Accounts</li>
-                                    <li>✓ {plan.admins} Admin Seats</li>
+                                    <li>✓ {plan.admins} Admin Roles</li>
                                     <li>✓ All Core Features</li>
                                 </ul>
                                 <Link

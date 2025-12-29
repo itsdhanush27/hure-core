@@ -1,0 +1,2714 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HURE Core — Employer/Owner Demo (Multi‑Location + Verification)</title>
+
+  <!-- Tailwind (CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React 18 + Babel (CDN) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+
+<body class="bg-slate-50 text-slate-900">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    /**
+     * HURE Core — Employer/Owner Demo (Single-file)
+     * What’s new in this version:
+     * - Multi-location Organization model (one plan per org; locations inherit plan)
+     * - Global Location Switcher (All Locations / specific location)
+     * - “KYC” language replaced with “Verification”
+     *   - Organization Verification (business/KRA PIN)
+     *   - Facility Verification (per location license + expiry)
+     * - Settings split: Organization vs Location
+     * - Billing is Organization-level only
+     * - Staff/Shifts/Attendance carry locationId and filter by selected location
+     */
+
+    // ---- LocalStorage keys (v3) ----
+    const LS = {
+      org: "hure_org_v6",
+      locations: "hure_locations_v6",
+      currentLoc: "hure_current_location_v6",
+      staff: "hure_staff_v6",
+      shifts: "hure_shifts_v6",
+      scheduleBlocks: "hure_schedule_blocks_v6",
+      attendance: "hure_attendance_v6",
+      leaves: "hure_leaves_v6",
+      docs: "hure_docs_v6",
+      roles: "hure_roles_v3",
+      audit: "hure_audit_v6",
+      payrollStatus: "hure_payroll_status_v6",
+    };
+    // ---- Demo schema version ----
+    const SCHEMA_KEY = "hure_demo_schema_version";
+    const SCHEMA_VERSION = "payroll_v6";
+    try {
+      const existing = localStorage.getItem(SCHEMA_KEY);
+      if (existing !== SCHEMA_VERSION) {
+        // wipe old demo data so new logic + defaults appear correctly
+        Object.values(LS).forEach(k => localStorage.removeItem(k));
+        localStorage.setItem(SCHEMA_KEY, SCHEMA_VERSION);
+        // also reset selected location to ALL for visibility
+        localStorage.setItem(LS.currentLoc, "ALL");
+        // window.location.reload(); // disabled to avoid reload loops in file:// demos
+      }
+    } catch (e) { /* ignore */ }
+
+
+    // ---- Safety check: if demo storage exists but is missing locums/salaries, force reseed ----
+    try {
+      const staffRaw = localStorage.getItem(LS.staff) || "";
+      const hasDaily = staffRaw.includes('"payBasis":"DAILY"') || staffRaw.includes('"payBasis":"DAILY"');
+      const hasMonthlySalary = staffRaw.includes('"monthlySalaryKes"');
+      if (staffRaw && (!hasDaily || !hasMonthlySalary)) {
+        Object.values(LS).forEach(k => localStorage.removeItem(k));
+        localStorage.setItem(SCHEMA_KEY, SCHEMA_VERSION);
+        localStorage.setItem(LS.currentLoc, "ALL");
+        // window.location.reload(); // disabled to avoid reload loops in file:// demos
+      }
+    } catch (e) { /* ignore */ }
+
+
+    // ---- Helpers ----
+    const uid = (p="id") => `${p}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+    const safeParse = (k, fallback) => {
+      try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; }
+      catch { return fallback; }
+    };
+    const safeSet = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+
+    const fmtDateEA = (iso) => {
+      // Accept YYYY-MM-DD
+      if (!iso) return "";
+      const [y,m,d] = iso.split("-").map(Number);
+      if (!y || !m || !d) return iso;
+      const dt = new Date(Date.UTC(y, m-1, d));
+      return dt.toLocaleDateString("en-GB", { day:"2-digit", month:"short", year:"numeric", timeZone:"UTC" });
+      // Example: 21 Dec 2025
+    };
+    const fmtKES = (n) => {
+      const val = Number(n || 0);
+      return val.toLocaleString("en-KE");
+    };
+
+
+    const makeOtp = () => String(Math.floor(100000 + Math.random()*900000));
+
+    const statusPill = (status) => {
+      const base = "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium";
+      switch ((status||"").toUpperCase()) {
+        case "ACTIVE":
+        case "APPROVED":
+        case "VERIFIED":
+          return `${base} bg-emerald-100 text-emerald-800`;
+        case "PENDING":
+        case "PENDING_REVIEW":
+        case "UNDER_REVIEW":
+          return `${base} bg-amber-100 text-amber-800`;
+        case "REJECTED":
+        case "SUSPENDED":
+          return `${base} bg-rose-100 text-rose-800`;
+        case "EXPIRED":
+          return `${base} bg-slate-200 text-slate-700`;
+        case "DRAFT":
+          return `${base} bg-slate-100 text-slate-700`;
+        default:
+          return `${base} bg-slate-100 text-slate-700`;
+      }
+    };
+
+    const planLimits = (tier) => {
+      const t = (tier||"ESSENTIAL").toUpperCase();
+      if (t === "PROFESSIONAL") return { locations: 2, staff: 30, adminPerms: 2 };
+      if (t === "ENTERPRISE") return { locations: 5, staff: 50, adminPerms: 10 };
+      return { locations: 1, staff: 10, adminPerms: 0 };
+    };
+
+    // ---- Demo seed data ----
+    const DEFAULT_ORG = {
+      orgId: "org_demo",
+      orgName: "Demo Health Group",
+      plan: { tier: "PROFESSIONAL", status: "ACTIVE", renewOn: "2026-01-15" },
+      billing: { currency: "KES", lastInvoiceId: "INV-1002" },
+      orgVerification: {
+        status: "PENDING_REVIEW", // PENDING_REVIEW | APPROVED | REJECTED | SUSPENDED
+        kraPin: "",
+        businessRegNo: "",
+        docs: [],
+      }
+    };
+
+    const DEFAULT_LOCATIONS = [
+      {
+        locationId: "loc_kisumu",
+        name: "Kisumu Clinic",
+        address: { town: "Kisumu", street: "Oginga Odinga Rd" },
+        contact: { phone: "+254 7XX XXX XXX", email: "kisumu@demogroup.co.ke" },
+        facilityVerification: {
+          status: "APPROVED", // DRAFT | PENDING_REVIEW | APPROVED | REJECTED | EXPIRED
+          licenseNo: "KMPDC-12345",
+          body: "KMPDC",
+          expiry: "2026-08-30",
+          docs: [],
+        },
+        settings: { timezone: "Africa/Nairobi" }
+      },
+      {
+        locationId: "loc_nairobi",
+        name: "Nairobi Clinic",
+        address: { town: "Nairobi", street: "Ngong Rd" },
+        contact: { phone: "+254 7XX XXX XXX", email: "nairobi@demogroup.co.ke" },
+        facilityVerification: {
+          status: "PENDING_REVIEW",
+          licenseNo: "",
+          body: "KMPDC",
+          expiry: "",
+          docs: [],
+        },
+        settings: { timezone: "Africa/Nairobi" }
+      }
+    ];
+
+    const DEFAULT_STAFF = [
+          // Clinic-employed staff (Monthly Salary + Casual Daily). Locums are managed outside HURE Core.
+          {
+            id: "stf1",
+            firstName: "A.",
+            lastName: "Otieno",
+            email: "a.otieno@example.com",
+            phone: "+254 712 345 678",
+            accountRole: "Owner",
+            jobRole: "GP",
+            licenseType: "KMPDC",
+            licenseNo: "A12345",
+            licenseExpiry: "2026-01-15",
+            onboardingStatus: "Completed",
+            vettingStatus: "Verified",
+            kycStatus: "Verified",
+            accountStatus: "Active",
+            inviteStatus: "Active",
+            payType: "Monthly salary (Regular staff)",
+            monthlySalary: 65000,
+            dailyRate: 0,
+            locationId: "kisumu",
+          },
+          {
+            id: "stf2",
+            firstName: "J.",
+            lastName: "Mwangi",
+            email: "j.mwangi@example.com",
+            phone: "+254 711 222 333",
+            accountRole: "Admin",
+            jobRole: "Nurse",
+            licenseType: "NCK",
+            licenseNo: "RN-98765",
+            licenseExpiry: "2025-12-20",
+            onboardingStatus: "Completed",
+            vettingStatus: "Pending review",
+            kycStatus: "Pending review",
+            accountStatus: "Active",
+            inviteStatus: "Pending",
+            payType: "Monthly salary (Regular staff)",
+            monthlySalary: 42000,
+            dailyRate: 0,
+            locationId: "nairobi",
+          },
+          {
+            id: "stf3",
+            firstName: "R.",
+            lastName: "Kiplagat",
+            email: "r.kiplagat@example.com",
+            phone: "+254 700 555 666",
+            accountRole: "HR",
+            jobRole: "Lab Tech",
+            licenseType: "KMLTTB",
+            licenseNo: "LAB-5566",
+            licenseExpiry: "2027-03-01",
+            onboardingStatus: "In progress",
+            vettingStatus: "In progress",
+            kycStatus: "In progress",
+            accountStatus: "Active",
+            inviteStatus: "None",
+            payType: "Daily (Casual staff)",
+            monthlySalary: 0,
+            dailyRate: 2500,
+            locationId: "kisumu",
+          },
+          {
+            id: "stf4",
+            firstName: "S.",
+            lastName: "Achieng",
+            email: "s.achieng@example.com",
+            phone: "+254 722 000 111",
+            accountRole: "Employee",
+            jobRole: "Receptionist",
+            licenseType: "—",
+            licenseNo: "—",
+            licenseExpiry: "—",
+            onboardingStatus: "Not started",
+            vettingStatus: "Not started",
+            kycStatus: "Not started",
+            accountStatus: "Inactive",
+            inviteStatus: "None",
+            payType: "Monthly salary (Regular staff)",
+            monthlySalary: 28000,
+            dailyRate: 0,
+            locationId: "nairobi",
+          },
+];
+
+    const DEFAULT_SHIFTS = [
+      { id: "sh1", date: "2025-12-27", start: "08:00", end: "17:00", roleNeeded: "Nurse", rateKes: 6000, status: "OPEN", locationId: "loc_kisumu" },
+      { id: "sh2", date: "2025-12-28", start: "08:00", end: "17:00", roleNeeded: "Clinical Officer", rateKes: 8000, status: "OPEN", locationId: "loc_nairobi" },
+    ];
+
+const DEFAULT_SCHEDULE_BLOCKS = [
+  // Coverage-first schedule model (HURE Core roster, not CareStint)
+  // qtyNeeded = required headcount for the shift block
+  // assignedStaffIds = multiple staff can be assigned
+  { id:"sb1", date:"2025-12-27", start:"08:00", end:"17:00", roleNeeded:"Nurse", qtyNeeded:2, assignedStaffIds:["stf1"], locationId:"loc_kisumu" },
+  { id:"sb2", date:"2025-12-28", start:"08:00", end:"17:00", roleNeeded:"Clinical Officer", qtyNeeded:1, assignedStaffIds:["stf2"], locationId:"loc_nairobi" },
+  { id:"sb3", date:"2025-12-28", start:"09:00", end:"17:00", roleNeeded:"Lab Tech", qtyNeeded:1, assignedStaffIds:[], locationId:"loc_kisumu" },
+];
+
+
+    const DEFAULT_ATTENDANCE = [
+      // Casual attendance (used to compute units + amount)
+      { id: "att1", staffId: "stf1", date: "2025-12-21", clockIn: "08:02", clockOut: "16:55", locationId: "loc_kisumu" }, // Full shift (≈ 8.88h) → units 1
+      { id: "att2", staffId: "stf4", date: "2025-12-22", clockIn: "08:05", clockOut: "12:15", locationId: "loc_kisumu" }, // Half day (≈ 4.17h) → units 0.5
+
+      // Salaried attendance (used for summary / review, not direct pay math)
+      { id: "att3", staffId: "stf2", date: "2025-12-21", clockIn: "08:00", clockOut: "16:10", locationId: "loc_kisumu" },
+      { id: "att4", staffId: "stf3", date: "2025-12-21", clockIn: "08:10", clockOut: "16:40", locationId: "loc_kisumu" },
+    ];
+
+    const DEFAULT_LEAVES = [
+      { id: "lv1", staffId: "stf1", type: "Annual", from: "2025-12-29", to: "2026-01-02", status: "PENDING", locationId: "loc_kisumu" }
+    ];
+
+    const DEFAULT_DOCS = [
+      { id:"doc1", name:"Staff Handbook (PDF)", scope:"ORG", locationId:null, uploadedAt:"2025-12-01" },
+      { id:"doc2", name:"Kisumu Facility SOP", scope:"LOCATION", locationId:"loc_kisumu", uploadedAt:"2025-12-05" },
+    ];
+
+    const DEFAULT_ROLES = {
+      currentUser: { name: "Owner", role: "OWNER" },
+      roles: {
+        OWNER: [
+          "view_dashboard","view_staff","manage_staff","view_schedule","manage_schedule",
+          "view_attendance","export_payroll","view_leave","manage_leave",
+          "view_billing","manage_org_settings","manage_location_settings",
+          "manage_org_verification","manage_facility_verification",
+          "view_docs","manage_docs","view_audit"
+        ],
+        ADMIN: [
+          "view_dashboard","view_staff","manage_staff","view_schedule","manage_schedule",
+          "view_attendance","export_payroll","view_leave","manage_leave",
+          "manage_location_settings","manage_facility_verification",
+          "view_docs","manage_docs","view_audit"
+        ],
+        HR: [
+          "view_dashboard","view_staff","manage_staff","view_schedule",
+          "view_attendance","export_payroll","view_leave","manage_leave",
+          "view_docs","manage_docs","view_audit"
+        ],
+        VIEWER: ["view_dashboard","view_staff","view_schedule","view_attendance","view_leave","view_docs"]
+      }
+    };
+
+    function HureCoreEmployerDemo(){
+      // --- hydrate state ---
+      const [org, setOrg] = useState(() => safeParse(LS.org, DEFAULT_ORG));
+      const [locations, setLocations] = useState(() => safeParse(LS.locations, DEFAULT_LOCATIONS));
+      const [currentLoc, setCurrentLoc] = useState(() => localStorage.getItem(LS.currentLoc) || "ALL");
+
+      const [staff, setStaff] = useState(() => safeParse(LS.staff, DEFAULT_STAFF));
+      const [shifts, setShifts] = useState(() => safeParse(LS.shifts, DEFAULT_SHIFTS));
+      const [scheduleBlocks, setScheduleBlocks] = useState(() => safeParse(LS.scheduleBlocks, DEFAULT_SCHEDULE_BLOCKS));
+      const [attendance, setAttendance] = useState(() => safeParse(LS.attendance, DEFAULT_ATTENDANCE));
+
+      // If localStorage was previously cleared or saved as an empty array, re-seed demo data
+      useEffect(() => {
+        if (!Array.isArray(staff) || staff.length === 0) {
+          setStaff(DEFAULT_STAFF);
+          safeSet(LS.staff, DEFAULT_STAFF);
+        }
+        if (!Array.isArray(attendance) || attendance.length === 0) {
+          setAttendance(DEFAULT_ATTENDANCE);
+          safeSet(LS.attendance, DEFAULT_ATTENDANCE);
+        }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+
+      const [leaves, setLeaves] = useState(() => safeParse(LS.leaves, DEFAULT_LEAVES));
+      const [docs, setDocs] = useState(() => safeParse(LS.docs, DEFAULT_DOCS));
+      const [rolesState, setRolesState] = useState(() => safeParse(LS.roles, DEFAULT_ROLES));
+      const [audit, setAudit] = useState(() => safeParse(LS.audit, []));
+      const [payrollStatusMap, setPayrollStatusMap] = useState(() => safeParse(LS.payrollStatus, {}));
+
+      const [view, setView] = useState("dashboard");
+
+      // modals/forms
+      const [showStaffModal, setShowStaffModal] = useState(false);
+      const [showShiftModal, setShowShiftModal] = useState(false);
+
+      const [newStaff, setNewStaff] = useState({ firstName:"", lastName:"", role:"Nurse", licenseBody:"", licenseNo:"", licenseExpiry:"", verificationStatus:"PENDING_REVIEW" , payBasis:"MONTHLY", monthlySalaryKes:60000, dailyRateKes:4500 });
+      const [newShift, setNewShift] = useState({ date:"", start:"08:00", end:"17:00", roleNeeded:"Nurse", rateKes:6000, status:"OPEN", qtyNeeded:1 });
+
+      const permissions = rolesState?.roles?.[rolesState?.currentUser?.role] || [];
+      const has = (p) => permissions.includes(p);
+
+      // persist
+      useEffect(() => safeSet(LS.org, org), [org]);
+      useEffect(() => safeSet(LS.locations, locations), [locations]);
+      useEffect(() => { localStorage.setItem(LS.currentLoc, currentLoc); }, [currentLoc]);
+      useEffect(() => safeSet(LS.staff, staff), [staff]);
+      useEffect(() => safeSet(LS.shifts, shifts), [shifts]);
+      useEffect(() => safeSet(LS.scheduleBlocks, scheduleBlocks), [scheduleBlocks]);
+      useEffect(() => safeSet(LS.attendance, attendance), [attendance]);
+      useEffect(() => safeSet(LS.leaves, leaves), [leaves]);
+      useEffect(() => safeSet(LS.docs, docs), [docs]);
+      useEffect(() => safeSet(LS.roles, rolesState), [rolesState]);
+      useEffect(() => safeSet(LS.audit, audit), [audit]);
+      useEffect(() => safeSet(LS.payrollStatus, payrollStatusMap), [payrollStatusMap]);
+
+      const locMap = useMemo(() => Object.fromEntries(locations.map(l => [l.locationId, l])), [locations]);
+
+      const scoped = (arr) => currentLoc === "ALL" ? arr : arr.filter(x => x.locationId === currentLoc);
+
+      const staffScoped = useMemo(() => scoped(staff), [staff, currentLoc]);
+      const shiftsScoped = useMemo(() => scoped(shifts), [shifts, currentLoc]);
+      const scheduleBlocksScoped = useMemo(() => scoped(scheduleBlocks), [scheduleBlocks, currentLoc]);
+      const attendanceScoped = useMemo(() => scoped(attendance), [attendance, currentLoc]);
+      const leavesScoped = useMemo(() => scoped(leaves), [leaves, currentLoc]);
+      const docsScoped = useMemo(() => {
+        if (currentLoc === "ALL") return docs;
+        return docs.filter(d => d.scope === "ORG" || d.locationId === currentLoc);
+      }, [docs, currentLoc]);
+
+      // auto-expiry for facility license
+      useEffect(() => {
+        const today = new Date();
+        let changed = false;
+        const next = locations.map(l => {
+          const exp = l?.facilityVerification?.expiry;
+          if (exp) {
+            const [y,m,d] = exp.split("-").map(Number);
+            const dt = new Date(Date.UTC(y, m-1, d));
+            if (dt < today && l.facilityVerification.status === "APPROVED") {
+              changed = true;
+              return { ...l, facilityVerification: { ...l.facilityVerification, status:"EXPIRED" } };
+            }
+          }
+          return l;
+        });
+        if (changed) setLocations(next);
+      }, []); // run once
+
+      const addAudit = (actor, action, detail="") => {
+        setAudit(prev => [{ id: uid("au"), at: new Date().toISOString(), actor, action, detail, locationId: currentLoc }, ...prev]);
+      };
+
+      const resetDemo = () => {
+        localStorage.removeItem(LS.org);
+        localStorage.removeItem(LS.locations);
+        localStorage.removeItem(LS.currentLoc);
+        localStorage.removeItem(LS.staff);
+        localStorage.removeItem(LS.shifts);
+        localStorage.removeItem(LS.scheduleBlocks);
+        localStorage.removeItem(LS.attendance);
+        localStorage.removeItem(LS.leaves);
+        localStorage.removeItem(LS.docs);
+        localStorage.removeItem(LS.roles);
+        localStorage.removeItem(LS.audit);
+        // window.location.reload(); // disabled to avoid reload loops in file:// demos
+      };
+
+      const currentLocName = useMemo(() => currentLoc === "ALL" ? "All Locations" : (locMap[currentLoc]?.name || "Unknown Location"), [currentLoc, locMap]);
+
+      // Payroll calc (Kenya-friendly)
+      const payrollRows = useMemo(() => {
+        const FULL_SHIFT_HRS = 8;
+        const HALF_SHIFT_HRS = 4;
+
+        const staffById = Object.fromEntries(staff.map(s => [s.id, s]));
+
+        const calcHours = (a) => {
+          const [inH,inM] = (a.clockIn||"00:00").split(":").map(Number);
+          const [outH,outM] = (a.clockOut||"00:00").split(":").map(Number);
+          const mins = (outH*60+outM) - (inH*60+inM);
+          return Math.max(0, mins/60);
+        };
+
+        const statusFromHours = (h) => {
+          if (h >= FULL_SHIFT_HRS) return { label: "Present (Full shift)", units: 1 };
+          if (h >= HALF_SHIFT_HRS) return { label: "Half Day", units: 0.5 };
+          return { label: "Absent", units: 0 };
+        };
+
+        // Daily rows: one line per attendance record (locums/casuals)
+        const dailyRows = attendanceScoped
+          .map(a => {
+            const s = staffById[a.staffId];
+            const hours = calcHours(a);
+            const { label, units } = statusFromHours(hours);
+            const rate = Number(s?.dailyRateKes || 0);
+            const amount = Math.round(units * rate);
+
+            return {
+              id: a.id,
+              type: "DAILY",
+              date: a.date,
+              period: "",
+              staffId: a.staffId,
+              staffName: s ? `${s.firstName} ${s.lastName}` : "Unknown",
+              role: s?.role || "-",
+              workSummary: label,
+              units,
+              rateKes: rate,
+              hoursAudit: Number(hours.toFixed(2)),
+              amountKes: amount,
+              locationId: a.locationId,
+              payrollKey: `d_${a.staffId}_${a.date}_${a.locationId}`,
+              payrollStatus: (payrollStatusMap[`d_${a.staffId}_${a.date}_${a.locationId}`] || "DRAFT")
+            };
+          })
+          .filter(r => (staffById[r.staffId]?.payBasis || "MONTHLY") === "DAILY");
+
+        // Monthly rows: one line per staff for the current scoped attendance set
+        const monthlyStaff = staff.filter(s => (s.payBasis || "MONTHLY") === "MONTHLY");
+        const attByStaff = attendanceScoped.reduce((acc, a) => {
+          (acc[a.staffId] = acc[a.staffId] || []).push(a);
+          return acc;
+        }, {});
+
+        const monthLabel = (iso) => {
+          const d = new Date(iso + "T00:00:00");
+          return d.toLocaleDateString("en-GB", { month: "short", year: "numeric" }); // e.g., Dec 2025
+        };
+
+        const periods = Array.from(new Set(attendanceScoped.map(a => monthLabel(a.date))));
+        const periodLabel = periods.length === 1 ? periods[0] : (periods.length === 0 ? "Current period" : "Multiple periods");
+
+        const monthlyRows = monthlyStaff.map(s => {
+          const list = attByStaff[s.id] || [];
+          let unitsWorked = 0;
+          let full = 0, half = 0, absent = 0;
+
+          list.forEach(a => {
+            const h = calcHours(a);
+            const { units } = statusFromHours(h);
+            unitsWorked += units;
+            if (units === 1) full += 1;
+            else if (units === 0.5) half += 1;
+            else absent += 1;
+          });
+
+          const salary = Number(s.monthlySalaryKes || 0);
+          const adjustments = 0; // keep simple in demo (later: deductions/allowances)
+          const net = Math.round(salary + adjustments);
+
+          return {
+            id: `pay_${s.id}_${periodLabel}`,
+            type: "MONTHLY",
+            date: "",
+            period: periodLabel,
+            staffId: s.id,
+            staffName: `${s.firstName} ${s.lastName}`,
+            role: s.role || "-",
+            workSummary: `Salary attendance • Full: ${full}, Half: ${half}, Absent: ${absent}`,
+            units: Number(unitsWorked.toFixed(2)),
+            rateKes: salary,
+            hoursAudit: "",
+            amountKes: net,
+            locationId: s.locationId,
+            payrollKey: `m_${s.id}_${periodLabel}`,
+            payrollStatus: (payrollStatusMap[`m_${s.id}_${periodLabel}`] || "DRAFT")
+          };
+        });
+
+        // Order: monthly first, then daily (so payroll feels like a payrun)
+        return [...monthlyRows, ...dailyRows];
+      }, [attendanceScoped, staff, payrollStatusMap]);
+
+      const exportCSV = (rows, filename) => {
+        const keys = Object.keys(rows[0] || { note:"No data" });
+        const csv = [keys.join(","), ...rows.map(r => keys.map(k => `"${String(r[k]??"").replaceAll('"','""')}"`).join(","))].join("\n");
+        const blob = new Blob([csv], { type:"text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      // ---- UI Components ----
+      const Card = ({title, right, children}) => (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div className="font-semibold text-slate-900">{title}</div>
+            {right}
+          </div>
+          {children}
+        </div>
+      );
+
+      const TopBar = () => (
+        <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-slate-200">
+          <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold">H</div>
+              <div>
+                <div className="text-sm font-semibold">{org.orgName}</div>
+                <div className="text-xs text-slate-600">
+                  Plan: <span className="font-medium">{org.plan.tier}</span>{" "}
+                  <span className={statusPill(org.plan.status)}>{org.plan.status}</span> <span className="ml-2 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 border border-emerald-200">PAYROLL V9</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Location switcher */}
+              <div className="hidden sm:block text-xs text-slate-600 mr-2">Viewing</div>
+              <select
+                className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
+                value={currentLoc}
+                onChange={(e) => setCurrentLoc(e.target.value)}
+                title="Location switcher"
+              >
+                <option value="ALL">All Locations</option>
+                {locations.map(l => <option key={l.locationId} value={l.locationId}>{l.name}</option>)}
+              </select>
+
+              <button
+                onClick={resetDemo}
+                className="px-3 py-2 rounded-xl border border-slate-300 text-sm hover:bg-slate-50"
+                title="Reset demo data"
+              >
+                Reset Demo
+              </button>
+
+              <button
+                onClick={() => {
+                  try {
+                    localStorage.clear();
+                  } catch (e) {}
+                  // window.location.reload(); // disabled to avoid reload loops in file:// demos
+                }}
+                className="px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-sm"
+                title="Hard reset: clears all demo storage and reloads"
+              >
+                Hard Reset
+              </button>
+
+            </div>
+          </div>
+        </div>
+      );
+
+      const Sidebar = () => (
+        <div className="bg-white border-r border-slate-200 p-3 w-full md:w-64">
+          <div className="mb-3">
+            <div className="text-xs text-slate-500">Signed in as</div>
+            <div className="text-sm font-semibold">{rolesState.currentUser.name} <span className="text-xs text-slate-500">({rolesState.currentUser.role})</span></div>
+            <div className="text-xs text-slate-500 mt-1">Scope: {currentLocName}</div>
+          </div>
+
+          <nav className="space-y-1">
+            {has("view_dashboard") && (
+              <NavBtn label="Dashboard" active={view==="dashboard"} onClick={() => setView("dashboard")} />
+            )}
+            {has("view_staff") && (
+              <NavBtn label="Staff" active={view==="staff"} onClick={() => setView("staff")} />
+            )}
+            {has("view_schedule") && (
+              <NavBtn label="Schedule" active={view==="schedule"} onClick={() => setView("schedule")} />
+            )}
+            {has("view_attendance") && (
+              <NavBtn label="Attendance" active={view==="attendance"} onClick={() => setView("attendance")} />
+            )}
+            {has("export_payroll") && (
+              <NavBtn label="Payroll Export" active={view==="payroll"} onClick={() => setView("payroll")} />
+            )}
+            {has("view_leave") && (
+              <NavBtn label="Leave" active={view==="leave"} onClick={() => setView("leave")} />
+            )}
+            {(has("manage_org_verification") || has("manage_facility_verification")) && (
+              <NavBtn label="Verification" active={view==="verification"} onClick={() => setView("verification")} />
+            )}
+            {(has("manage_org_settings") || has("manage_location_settings")) && (
+              <NavBtn label="Settings" active={view==="settings"} onClick={() => setView("settings")} />
+            )}
+            {(has("manage_org_settings") || has("manage_location_settings")) && (
+              <NavBtn label="Permissions" active={view==="permissions"} onClick={() => setView("permissions")} />
+            )}
+            {has("view_billing") && (
+              <NavBtn label="Billing" active={view==="billing"} onClick={() => setView("billing")} />
+            )}
+            {has("view_docs") && (
+              <NavBtn label="Documents" active={view==="docs"} onClick={() => setView("docs")} />
+            )}
+            {has("view_audit") && (
+              <NavBtn label="Audit Log" active={view==="audit"} onClick={() => setView("audit")} />
+            )}
+          </nav>
+
+          <div className="mt-4 p-3 rounded-2xl bg-slate-50 border border-slate-200">
+            <div className="text-xs text-slate-600 mb-1">Quick note</div>
+            <div className="text-xs text-slate-700">
+              In Kenya/East Africa, “KYC” is often confusing. This demo uses <span className="font-medium">Verification</span> instead:
+              <ul className="list-disc pl-5 mt-1">
+                <li><span className="font-medium">Organization Verification</span> (business/KRA PIN)</li>
+                <li><span className="font-medium">Facility Verification</span> (license per location)</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      );
+
+      const NavBtn = ({label, active, onClick}) => (
+        <button
+          onClick={onClick}
+          className={[
+            "w-full text-left px-3 py-2 rounded-xl text-sm",
+            active ? "bg-slate-900 text-white" : "hover:bg-slate-100 text-slate-800"
+          ].join(" ")}
+        >
+          {label}
+        </button>
+      );
+
+      const PageWrap = ({title, subtitle, actions, children}) => (
+        <div className="max-w-7xl mx-auto p-4">
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div>
+              <div className="text-xl font-bold">{title}</div>
+              {subtitle && <div className="text-sm text-slate-600 mt-1">{subtitle}</div>}
+            </div>
+            {actions}
+          </div>
+          {children}
+        </div>
+      );
+
+      // ---- Views ----
+      const DashboardView = () => {
+        const limits = planLimits(org.plan.tier);
+        const locCount = locations.length;
+        const staffCount = staff.length;
+        const openShifts = shiftsScoped.filter(s => s.status === "OPEN").length;
+
+        const orgV = org.orgVerification.status;
+        const facilityPending = locations.filter(l => l.facilityVerification.status !== "APPROVED").length;
+
+        return (
+          <PageWrap
+            title="Dashboard"
+            subtitle={`Overview • ${currentLocName}`}
+          >
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card title="Subscription">
+                <div className="text-sm text-slate-700">Tier: <span className="font-semibold">{org.plan.tier}</span></div>
+                <div className="text-sm text-slate-700 mt-1">Renewal: <span className="font-medium">{fmtDateEA(org.plan.renewOn)}</span></div>
+                <div className="text-sm text-slate-700 mt-2">
+                  Limits: <span className="font-medium">{limits.locations} location(s)</span>, <span className="font-medium">{limits.staff} staff</span>
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {locCount > limits.locations ? "⚠️ You are above your location limit. Consider upgrading or removing a location." : "✓ Within plan limits"}
+                </div>
+              </Card>
+
+              <Card title="Verification status">
+                <div className="flex items-center justify-between text-sm">
+                  <div className="text-slate-700">Organization</div>
+                  <span className={statusPill(orgV)}>{orgV}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm mt-2">
+                  <div className="text-slate-700">Facilities needing action</div>
+                  <div className="font-semibold">{facilityPending}</div>
+                </div>
+                <div className="text-xs text-slate-500 mt-2">
+                  Complete organization + facility verification to avoid restrictions.
+                </div>
+              </Card>
+
+              <Card title="Operational snapshot">
+                <div className="text-sm text-slate-700">Locations: <span className="font-semibold">{locCount}</span></div>
+                <div className="text-sm text-slate-700 mt-1">Staff: <span className="font-semibold">{staffCount}</span></div>
+                <div className="text-sm text-slate-700 mt-1">Open shifts (current scope): <span className="font-semibold">{openShifts}</span></div>
+                <div className="text-xs text-slate-500 mt-2">
+                  Switch location at the top to view each facility’s data.
+                </div>
+              </Card>
+            </div>
+          </PageWrap>
+        );
+      };
+
+      const StaffView = () => {
+        const canManage = has("manage_staff");
+        const addDisabled = false; // allow adding staff even when viewing All Locations
+
+        const staffScoped = currentLoc === "ALL" ? staff : staff.filter(s => s.locationId === currentLoc);
+
+
+        const [reviewStaff, setReviewStaff] = useState(null);
+        const [inviteTarget, setInviteTarget] = useState(null); // { staff, channel: "SMS"|"WA" }
+        const getVetting = (s) => (s.vettingStatus || s.kycStatus || "Not started");
+        const setVetting = (staffId, nextStatus) => {
+          setStaff(prev => prev.map(x => x.id===staffId ? ({...x, vettingStatus: nextStatus, kycStatus: nextStatus}) : x));
+        };
+        const ensureInviteFields = (s) => {
+          if (s.inviteCode && s.inviteToken) return s;
+          return { ...s, inviteCode: makeOtp(), inviteToken: uid("inv"), inviteStatus: s.inviteStatus || "Pending" };
+        };
+
+        const pill = (txt, kind="slate") => (
+          <span className={[
+            "inline-flex items-center px-2 py-0.5 rounded-full text-xs border",
+            kind==="green" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+            kind==="yellow" ? "bg-amber-50 text-amber-700 border-amber-200" :
+            kind==="red" ? "bg-rose-50 text-rose-700 border-rose-200" :
+            kind==="blue" ? "bg-sky-50 text-sky-700 border-sky-200" :
+            "bg-slate-50 text-slate-700 border-slate-200"
+          ].join(" ")}>{txt}</span>
+        );
+
+        const expiryPill = (d) => {
+          if (!d) return <span className="text-slate-400">—</span>;
+          const dt = new Date(d+"T00:00:00");
+          const now = new Date();
+          const days = Math.round((dt - now) / (1000*60*60*24));
+          if (days < 0) return pill("Expired", "red");
+          if (days <= 45) return pill("Expiring soon", "yellow");
+          return <span className="text-slate-700">{fmtDate(d)}</span>;
+        };
+
+        return (
+          <PageWrap
+            title="Staff"
+            subtitle="Track contact details, licenses, vetting status and onboarding status for each staff member."
+            actions={
+              canManage && (
+                <button
+                  onClick={() => setShowStaffModal(true)}
+                  disabled={addDisabled}
+                  className={[
+                    "px-4 py-2 rounded-xl text-sm font-medium",
+                    addDisabled ? "bg-slate-200 text-slate-500 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"
+                  ].join(" ")}
+                  title={addDisabled ? "Choose a specific location to add staff" : "Add a staff member"}
+                >
+                  Add staff
+                </button>
+              )
+            }
+          >
+            {(() => {
+              // License alert banner (simple, Kenya/East Africa-friendly)
+              const now = new Date();
+              const daysUntil = (iso) => {
+                if (!iso) return null;
+                const dt = new Date(`${iso}T00:00:00`);
+                return Math.ceil((dt - now) / (1000 * 60 * 60 * 24));
+              };
+
+              const expiring = staffScoped.filter(s => {
+                const d = daysUntil(s.licenseExpiry);
+                return typeof d === "number" && d >= 0 && d <= 45;
+              });
+              const expired = staffScoped.filter(s => {
+                const d = daysUntil(s.licenseExpiry);
+                return typeof d === "number" && d < 0;
+              });
+
+              if (!expiring.length && !expired.length) return null;
+
+              const isDanger = expired.length > 0;
+              const title = isDanger ? "License expired" : "License expiring soon";
+              const msg = isDanger
+                ? `${expired.length} staff member(s) have an expired license. Please update documents to avoid compliance issues.`
+                : `${expiring.length} staff member(s) have a license expiring within 45 days. Update early to avoid last-minute issues.`;
+
+              return (
+                <div
+                  className="mb-4 rounded-2xl border px-4 py-3"
+                  style={{
+                    background: isDanger ? "#FFF1F2" : "#FFFBEB",
+                    borderColor: isDanger ? "#FDA4AF" : "#FDE68A",
+                    color: "#0F172A"
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span className="pill" style={{
+                          background: isDanger ? "#FEE2E2" : "#FEF3C7",
+                          borderColor: isDanger ? "#FDA4AF" : "#FDE68A",
+                          color: isDanger ? "#9F1239" : "#92400E"
+                        }}>{title}</span>
+                        <span className="text-sm" style={{ color: "#475569" }}>Action recommended</span>
+                      </div>
+                      <div className="text-sm" style={{ color: "#334155", marginTop: 6 }}>{msg}</div>
+                    </div>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        // Demo: jump user to Staff table and highlight rows already on screen
+                        toast("Review staff licenses below.");
+                      }}
+                    >
+                      Review
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+            <Card>
+              <div className="p-4 border-b border-slate-100">
+                <div className="font-semibold">Staff onboarding &amp; credentialing</div>
+                <div className="text-sm text-slate-500">
+                  {currentLoc === "ALL"
+                    ? "Viewing staff across all locations. Tip: choose a specific location to add staff."
+                    : `Viewing staff for ${currentLocName}.`}
+                </div>
+              </div>
+
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-600">
+                    <tr>
+                      <th className="text-left font-medium p-3">First</th>
+                      <th className="text-left font-medium p-3">Last</th>
+                      <th className="text-left font-medium p-3">Email</th>
+                      <th className="text-left font-medium p-3">Account role</th>
+                      <th className="text-left font-medium p-3">Job role</th>
+                      <th className="text-left font-medium p-3">License type</th>
+                      <th className="text-left font-medium p-3">License #</th>
+                      <th className="text-left font-medium p-3">License expiry</th>
+                      <th className="text-left font-medium p-3">Onboarding</th>
+                      <th className="text-left font-medium p-3">Vetting</th>
+                      <th className="text-left font-medium p-3">Account</th>
+                      <th className="text-left font-medium p-3">Invite</th>
+                      <th className="text-left font-medium p-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {staffScoped.map((s) => (
+                      <tr key={s.id} className="hover:bg-slate-50/60 cursor-pointer" onClick={() => setReviewStaff(s)}>
+                        <td className="p-3">{s.firstName}</td>
+                        <td className="p-3">{s.lastName}</td>
+                        <td className="p-3 text-slate-700">{s.email || <span className="text-slate-400">—</span>}</td>
+                        <td className="p-3">{s.accountRole || <span className="text-slate-400">—</span>}</td>
+                        <td className="p-3">{s.jobRole || s.role || <span className="text-slate-400">—</span>}</td>
+                        <td className="p-3">{s.licenseType || <span className="text-slate-400">—</span>}</td>
+                        <td className="p-3">{s.licenseNumber || <span className="text-slate-400">—</span>}</td>
+                        <td className="p-3">{expiryPill(s.licenseExpiry)}</td>
+                        <td className="p-3">
+                          {s.onboardingStatus === "Completed" ? pill("Completed","green")
+                            : s.onboardingStatus === "In progress" ? pill("In progress","yellow")
+                            : pill(s.onboardingStatus || "Not started","slate")}
+                        </td>
+                        <td className="p-3">
+                          {getVetting(s) === "Verified" ? pill("Verified","green")
+                            : getVetting(s) === "Pending review" ? pill("Pending review","yellow")
+                            : getVetting(s) === "In progress" ? pill("In progress","yellow")
+                            : pill(getVetting(s) || "Not started","slate")}
+                        </td>
+                        <td className="p-3">
+                          {s.accountStatus === "Active" ? pill("Active","green") : pill(s.accountStatus || "Inactive","slate")}
+                        </td>
+                        <td className="p-3">
+                          {s.inviteStatus === "Active" ? pill("Active","green")
+                            : s.inviteStatus === "Pending" ? pill("Pending","yellow")
+                            : <span className="text-slate-500">{s.inviteStatus || "None"}</span>}
+                        </td>
+                        <td className="p-3">
+                          <div className="flex items-center gap-2" onClick={(e)=>e.stopPropagation()}>
+                            <button
+                              className="px-2 py-1 rounded-lg text-xs border border-slate-200 bg-white hover:bg-slate-50"
+                              onClick={()=>{
+                                const s2 = ensureInviteFields(s);
+                                if (s2 !== s) setStaff(prev => prev.map(x => x.id===s.id ? s2 : x));
+                                setInviteTarget({ staff: s2, channel:"SMS" });
+                              }}
+                            >SMS</button>
+                            <button
+                              className="px-2 py-1 rounded-lg text-xs border border-slate-200 bg-white hover:bg-slate-50"
+                              onClick={()=>{
+                                const s2 = ensureInviteFields(s);
+                                if (s2 !== s) setStaff(prev => prev.map(x => x.id===s.id ? s2 : x));
+                                setInviteTarget({ staff: s2, channel:"WA" });
+                              }}
+                            >WA</button>
+                            <button
+                              className="px-2 py-1 rounded-lg text-xs border border-slate-200 bg-white hover:bg-slate-50"
+                              onClick={()=>{
+                                setStaff(prev => prev.map(x => x.id===s.id ? ({...x, inviteStatus:"Revoked", inviteRevokedAt:new Date().toISOString()}) : x));
+                                toast("Invite revoked (demo).");
+                              }}
+                            >Revoke</button>
+                          </div>
+                          <button
+                            className="mt-1 text-xs text-blue-600 hover:underline"
+                            onClick={(e)=>{ e.stopPropagation(); setReviewStaff(s); }}
+                          >Review Vetting</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {staffScoped.length === 0 && (
+                      <tr>
+                        <td className="p-4 text-slate-500" colSpan={13}>
+                          No staff in this scope yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="p-4 text-sm text-slate-500">
+                Tip: Keep the dashboard focused — everything else can be a plugin in Settings.
+              </div>
+            </Card>
+
+            {/* Add staff modal */}
+            {showStaffModal && (
+              <Modal title="Add staff" onClose={() => setShowStaffModal(false)}>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <Field label="First name">
+                    <input className="input" value={newStaff.firstName} onChange={e=>setNewStaff({...newStaff, firstName:e.target.value})} placeholder="First name" />
+                  </Field>
+                  <Field label="Last name">
+                    <input className="input" value={newStaff.lastName} onChange={e=>setNewStaff({...newStaff, lastName:e.target.value})} placeholder="Last name" />
+                  </Field>
+                  <Field label="Email">
+                    <input className="input" value={newStaff.email} onChange={e=>setNewStaff({...newStaff, email:e.target.value})} placeholder="Email" />
+                  </Field>
+                  <Field label="Phone">
+                    <input className="input" value={newStaff.phone} onChange={e=>setNewStaff({...newStaff, phone:e.target.value})} placeholder="Phone" />
+                  </Field>
+
+                  <Field label="Account role">
+                    <select className="input" value={newStaff.accountRole} onChange={e=>setNewStaff({...newStaff, accountRole:e.target.value})}>
+                      <option>Owner</option>
+                      <option>Admin</option>
+                      <option>HR</option>
+                      <option>Employee</option>
+                    </select>
+                  </Field>
+
+                  <Field label="Job role">
+                    <select className="input" value={newStaff.jobRole} onChange={e=>setNewStaff({...newStaff, jobRole:e.target.value})}>
+                      <option>GP</option>
+                      <option>Nurse</option>
+                      <option>Clinical Officer</option>
+                      <option>Doctor</option>
+                      <option>Lab Tech</option>
+                      <option>Pharmacist</option>
+                      <option>Receptionist</option>
+                    </select>
+                  </Field>
+
+                  <Field label="License type (for clinicians)">
+                    <select className="input" value={newStaff.licenseType} onChange={e=>setNewStaff({...newStaff, licenseType:e.target.value})}>
+                      <option>Not applicable / None</option>
+                      <option>KMPDC</option>
+                      <option>NCK</option>
+                      <option>KMLTTB</option>
+                      <option>PPB</option>
+                      <option>Other</option>
+                    </select>
+                  </Field>
+
+                  <Field label="License number">
+                    <input className="input" value={newStaff.licenseNumber} onChange={e=>setNewStaff({...newStaff, licenseNumber:e.target.value})} placeholder="e.g. A12345" />
+                  </Field>
+
+                  <Field label="License expiry date">
+                    <input className="input" type="date" value={newStaff.licenseExpiry} onChange={e=>setNewStaff({...newStaff, licenseExpiry:e.target.value})} />
+                  </Field>
+
+                  <Field label="Pay type">
+                    <select className="input" value={newStaff.payBasis} onChange={e=>setNewStaff({...newStaff, payBasis:e.target.value})}>
+                      <option value="MONTHLY">Monthly salary (Regular staff)</option>
+                      <option value="DAILY">Daily rate (Casual)</option>
+                    </select>
+                  </Field>
+
+                  {newStaff.payBasis === "MONTHLY" ? (
+                    <Field label="Monthly salary (KES)">
+                      <input className="input" type="number" value={newStaff.monthlySalaryKes} onChange={e=>setNewStaff({...newStaff, monthlySalaryKes:Number(e.target.value||0)})} />
+                    </Field>
+                  ) : (
+                    <Field label="Daily rate (KES)">
+                      <input className="input" type="number" value={newStaff.dailyRateKes} onChange={e=>setNewStaff({...newStaff, dailyRateKes:Number(e.target.value||0)})} />
+                    </Field>
+                  )}
+                </div>
+
+                <div className="flex justify-end gap-2 mt-4">
+                  <button className="btn" onClick={() => setShowStaffModal(false)}>Cancel</button>
+                  <button
+                    className="btnPrimary"
+                    onClick={() => {
+                      if (!newStaff.firstName.trim() || !newStaff.lastName.trim()) return;
+                      if (currentLoc === "ALL") return;
+                      const item = {
+                        id: uid("stf"),
+                        ...newStaff,
+                        role: newStaff.jobRole, // backwards-compatible
+                        locationId: (currentLoc === "ALL" ? (newStaff.locationId || (locations[0] && locations[0].id)) : currentLoc),
+                        inviteStatus: "Pending",
+                        inviteCode: makeOtp(),
+                        inviteToken: uid("inv"),
+                        accountStatus: "Active",
+                        onboardingStatus: newStaff.onboardingStatus || "In progress",
+                        kycStatus: newStaff.kycStatus || "Pending review",
+                      };
+                      setStaff(prev => [item, ...prev]);
+                      const _locId = (currentLoc === "ALL" ? (newStaff.locationId || (locations[0] && locations[0].id)) : currentLoc);
+                      const _locName = (locations.find(l=>l.id===_locId)?.name) || currentLocName;
+                      addAudit("Owner", "Added staff", `${item.firstName} ${item.lastName} (${_locName})`);
+                      setNewStaff({
+                        firstName:"", lastName:"", email:"", phone:"", locationId:"",
+                        accountRole:"Admin", jobRole:"GP",
+                        licenseType:"Not applicable / None", licenseBody:"", licenseNumber:"", licenseExpiry:"",
+                        onboardingStatus:"Not started", kycStatus:"Not started",
+                        accountStatus:"Inactive", inviteStatus:"None",
+                        payBasis:"MONTHLY", monthlySalaryKes:60000, dailyRateKes:4500
+                      });
+                      setShowStaffModal(false);
+                    }}
+                  >
+                    Save
+                  </button>
+                </div>
+              </Modal>
+            )}
+{/* Review Vetting modal (click a row or "Review Vetting") */}
+{reviewStaff && (
+  <Modal
+    title="Review Vetting / Credentials"
+    onClose={() => setReviewStaff(null)}
+  >
+    <div className="text-sm text-slate-700">
+      <div className="font-semibold">{reviewStaff.firstName} {reviewStaff.lastName} <span className="text-slate-500">• {reviewStaff.accountRole || "-"} • {reviewStaff.jobRole || reviewStaff.role || "-"}</span></div>
+      <div className="text-xs text-slate-500 mt-1">
+        Email: {reviewStaff.email || "—"} • Phone: {reviewStaff.phone || "—"}
+      </div>
+
+      <div className="mt-4 border-t pt-4">
+        <div className="text-xs tracking-wide text-slate-500">LICENSE DETAILS</div>
+        <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <div className="text-xs text-slate-500">Type</div>
+            <div className="font-medium">{reviewStaff.licenseType || "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">Number</div>
+            <div className="font-medium">{reviewStaff.licenseNumber || reviewStaff.licenseNo || "—"}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">Expiry</div>
+            <div className="font-medium">{reviewStaff.licenseExpiry && reviewStaff.licenseExpiry !== "—" ? fmtDateEA(reviewStaff.licenseExpiry) : "—"}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <div className="text-xs text-slate-500">Current vetting status</div>
+        <div>{getVetting(reviewStaff) === "Verified" ? pill("Verified","green")
+          : getVetting(reviewStaff) === "Pending review" ? pill("Pending review","yellow")
+          : getVetting(reviewStaff) === "Rejected" ? pill("Rejected","red")
+          : getVetting(reviewStaff) === "Expired" ? pill("Expired","red")
+          : getVetting(reviewStaff) === "In progress" ? pill("In progress","yellow")
+          : pill(getVetting(reviewStaff) || "Not started","slate")}
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-wrap justify-end gap-2">
+        <button className="btn" onClick={() => setReviewStaff(null)}>Close</button>
+        <button className="btn" onClick={() => { setVetting(reviewStaff.id, "Pending review"); toast("Marked pending review (demo)."); }}>Mark pending</button>
+        <button className="btnPrimary" onClick={() => { setVetting(reviewStaff.id, "Verified"); toast("Verified (demo)."); }}>Verify</button>
+        <button className="px-3 py-2 rounded-xl text-sm font-medium bg-rose-600 text-white hover:bg-rose-700" onClick={() => { setVetting(reviewStaff.id, "Rejected"); toast("Rejected (demo)."); }}>Reject</button>
+        <button className="px-3 py-2 rounded-xl text-sm font-medium bg-amber-600 text-white hover:bg-amber-700" onClick={() => { setVetting(reviewStaff.id, "Expired"); toast("Marked expired (demo)."); }}>Mark expired</button>
+      </div>
+    </div>
+  </Modal>
+)}
+
+{/* Invite modal (SMS / WhatsApp OTP link) */}
+{inviteTarget && (
+  <Modal
+    title={`Send invite via ${inviteTarget.channel}`}
+    onClose={() => setInviteTarget(null)}
+  >
+    <div className="text-sm text-slate-700">
+      <div className="font-semibold">{inviteTarget.staff.firstName} {inviteTarget.staff.lastName}</div>
+      <div className="text-xs text-slate-500 mt-1">Invite status: {inviteTarget.staff.inviteStatus || "Pending"}</div>
+
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+        <div className="text-xs text-slate-500">OTP (demo)</div>
+        <div className="text-lg font-bold tracking-wider">{inviteTarget.staff.inviteCode || "—"}</div>
+        <div className="text-xs text-slate-500 mt-2">Invite link (demo)</div>
+        <div className="text-xs break-all text-slate-700">https://core.gethure.com/invite/{inviteTarget.staff.inviteToken || "token"}</div>
+      </div>
+
+      <div className="mt-4">
+        <div className="text-xs text-slate-500 mb-2">Message preview</div>
+        <div className="rounded-2xl border border-slate-200 p-3 text-sm bg-white">
+          Hi {inviteTarget.staff.firstName}, you’ve been added to {org.orgName}. Use OTP <b>{inviteTarget.staff.inviteCode || "—"}</b> to finish creating your account: https://core.gethure.com/invite/{inviteTarget.staff.inviteToken || "token"}.
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-end gap-2">
+        <button className="btn" onClick={() => setInviteTarget(null)}>Cancel</button>
+        <button
+          className="btnPrimary"
+          onClick={() => {
+            setStaff(prev => prev.map(x => x.id===inviteTarget.staff.id ? ({...x, inviteStatus:"Pending", inviteSentAt:new Date().toISOString(), inviteLastChannel: inviteTarget.channel}) : x));
+            toast(`Invite queued via ${inviteTarget.channel} (demo).`);
+            setInviteTarget(null);
+          }}
+        >
+          Send
+        </button>
+      </div>
+    </div>
+  </Modal>
+)}
+          </PageWrap>
+        );
+      };
+
+const ScheduleView = () => {
+  const canManage = has("manage_schedule");
+  const addDisabled = currentLoc === "ALL";
+
+  const [goToDate, setGoToDate] = useState("");
+  const [roleFilter, setRoleFilter] = useState("All roles");
+  const [manageBlock, setManageBlock] = useState(null);
+  const [assignTab, setAssignTab] = useState("inhouse"); // inhouse | locum
+  const [locumDraft, setLocumDraft] = useState({ name:"", phone:"", supervisorId:"", notes:"" });
+
+
+  const staffById = useMemo(() => Object.fromEntries(staff.map(s => [s.id, s])), [staff]);
+  const updateBlock = (blockId, updater) => {
+    setScheduleBlocks(prev => prev.map(b => b.id === blockId ? updater({ ...b }) : b));
+  };
+
+  const addInhouseToBlock = (blockId, staffId) => {
+    updateBlock(blockId, (b) => {
+      const ids = new Set(b.assignedStaffIds || []);
+      ids.add(staffId);
+      b.assignedStaffIds = Array.from(ids);
+      return b;
+    });
+  };
+
+  const removeInhouseFromBlock = (blockId, staffId) => {
+    updateBlock(blockId, (b) => {
+      b.assignedStaffIds = (b.assignedStaffIds || []).filter(id => id !== staffId);
+      return b;
+    });
+  };
+
+  const addLocumToBlock = (blockId, payload) => {
+    updateBlock(blockId, (b) => {
+      const list = b.externalCovers || [];
+      list.push({ id: "lc_" + Date.now(), ...payload });
+      b.externalCovers = list;
+      return b;
+    });
+  };
+
+  const removeLocumFromBlock = (blockId, locumId) => {
+    updateBlock(blockId, (b) => {
+      b.externalCovers = (b.externalCovers || []).filter(l => l.id !== locumId);
+      return b;
+    });
+  };
+
+
+  const roles = useMemo(() => {
+    const rs = Array.from(new Set(scheduleBlocks.map(b => b.roleNeeded))).sort();
+    return ["All roles", ...rs];
+  }, [scheduleBlocks]);
+
+  const scopedBlocksRaw = useMemo(() => scheduleBlocksScoped, [scheduleBlocksScoped]);
+
+  const scopedBlocks = useMemo(() => {
+    let rows = scopedBlocksRaw;
+    if (goToDate) rows = rows.filter(r => r.date === goToDate);
+    if (roleFilter !== "All roles") rows = rows.filter(r => r.roleNeeded === roleFilter);
+    return [...rows].sort((a,b)=> (a.date+a.start).localeCompare(b.date+b.start));
+  }, [scopedBlocksRaw, goToDate, roleFilter]);
+
+  const coverageSummary = useMemo(() => {
+    const byRole = {};
+    const base = goToDate ? scopedBlocksRaw.filter(r => r.date === goToDate) : scopedBlocksRaw;
+    base.forEach(r => {
+      const k = r.roleNeeded;
+      const req = Number(r.qtyNeeded || 1);
+      const asg = (r.assignedStaffIds || []).length + (r.externalCovers || []).length;
+      byRole[k] = byRole[k] || { required:0, assigned:0, short:0 };
+      byRole[k].required += req;
+      byRole[k].assigned += asg;
+      byRole[k].short += Math.max(0, req - asg);
+    });
+    return Object.entries(byRole).map(([role,v])=>({role,...v})).sort((a,b)=>a.role.localeCompare(b.role));
+  }, [scopedBlocksRaw, goToDate]);
+
+  const totalGaps = useMemo(() => {
+    const base = goToDate ? scopedBlocksRaw.filter(r => r.date === goToDate) : scopedBlocksRaw;
+    return base.reduce((acc, r) => {
+      const req = Number(r.qtyNeeded || 1);
+      const asg = (r.assignedStaffIds || []).length + (r.externalCovers || []).length;
+      return acc + Math.max(0, req - asg);
+    }, 0);
+  }, [scopedBlocksRaw, goToDate]);
+
+  const pill = (kind, text) => {
+    const base = "px-2 py-0.5 rounded-full border text-xs font-medium";
+    const cls = kind==="ok"
+      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+      : "bg-amber-50 text-amber-800 border-amber-200";
+    return <span className={[base, cls].join(" ")}>{text}</span>;
+  };
+
+  const autoAssignOne = (block) => {
+    const req = Number(block.qtyNeeded || 1);
+    const assigned = block.assignedStaffIds || [];
+    const ext = block.externalCovers || [];
+    const coveredCount = assigned.length + ext.length;
+    const covered = coveredCount >= req;
+
+    // Prefer matching role + location; fallback to location-only
+    let pool = staff.filter(s => s.locationId === block.locationId && (s.role === block.roleNeeded));
+    if (pool.length === 0) pool = staff.filter(s => s.locationId === block.locationId);
+
+    const next = pool.find(s => !assigned.includes(s.id));
+
+    // Demo behavior: add 1 person each click until covered, then clear
+    const nextAssigned = covered ? [] : (next ? [...assigned, next.id] : assigned);
+
+    setScheduleBlocks(prev => prev.map(b => b.id===block.id ? ({...b, assignedStaffIds: nextAssigned}) : b));
+    addAudit("Owner", "Updated schedule assignment", `${fmtDateEA(block.date)} ${block.roleNeeded} (${locMap[block.locationId]?.name || ""})`);
+  };
+
+  return (
+    <PageWrap
+      title="Schedule"
+      subtitle={currentLoc === "ALL" ? "Roster & coverage across all facilities (coverage-first, multi-assign)" : `Roster & coverage for ${currentLocName}`}
+      actions={
+        canManage && (
+          <button
+            onClick={() => setShowShiftModal(true)}
+            disabled={addDisabled}
+            className={[
+              "px-4 py-2 rounded-xl text-sm font-medium",
+              addDisabled ? "bg-slate-200 text-slate-500 cursor-not-allowed" : "bg-slate-900 text-white hover:bg-slate-800"
+            ].join(" ")}
+          >
+            Add schedule block
+          </button>
+        )
+      }
+    >
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 mb-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="text-sm text-slate-700">Go to date</div>
+          <input className="px-3 py-2 rounded-xl border border-slate-300 text-sm" type="date" value={goToDate} onChange={e=>setGoToDate(e.target.value)} />
+          <div className="text-sm text-slate-700 ml-2">Filter</div>
+          <select className="px-3 py-2 rounded-xl border border-slate-300 text-sm" value={roleFilter} onChange={e=>setRoleFilter(e.target.value)}>
+            {roles.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <button
+            className="ml-auto px-3 py-2 rounded-xl border border-slate-300 text-sm hover:bg-slate-50"
+            onClick={()=>{ setGoToDate(""); setRoleFilter("All roles"); }}
+          >
+            Clear filters
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="rounded-2xl border bg-white p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-semibold">Coverage summary</div>
+              {totalGaps ? pill("warn", `${totalGaps} gaps`) : pill("ok","Covered")}
+            </div>
+            <div className="text-xs text-slate-500 mb-2">
+              Based on current scope{goToDate ? ` for ${fmtDateEA(goToDate)}` : ""}.
+            </div>
+            {coverageSummary.length===0 ? (
+              <div className="text-sm text-slate-500">No schedule blocks yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {coverageSummary.map(r => (
+                  <div key={r.role} className="flex items-center justify-between text-sm">
+                    <div className="text-slate-700">{r.role}</div>
+                    <div className="font-medium">
+                      {r.assigned}/{r.required} assigned
+                      {r.short>0 && <span className="text-amber-700"> • Short by {r.short}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 text-xs text-slate-500">
+              This is the “real” model for small & growing clinics: required headcount + multiple staff assignments.
+            </div>
+          </div>
+
+          <div className="lg:col-span-2 rounded-2xl border overflow-hidden bg-white">
+            <div className="bg-slate-50 p-3 text-sm text-slate-600 flex items-center justify-between">
+              <div>Schedule blocks</div>
+              <div className="text-xs">Demo action: click “Manage coverage” to add one staff until covered, then clear.</div>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="text-slate-600">
+                <tr className="border-t">
+                  <th className="text-left p-3">Date</th>
+                  <th className="text-left p-3">Time</th>
+                  <th className="text-left p-3">Role</th>
+                  <th className="text-left p-3">Required</th>
+                  <th className="text-left p-3">Assigned</th>
+                  <th className="text-left p-3">Coverage</th>
+                  {currentLoc === "ALL" && <th className="text-left p-3">Location</th>}
+                  {canManage && <th className="text-right p-3">Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {scopedBlocks.map(b => {
+                  const req = Number(b.qtyNeeded||1);
+                  const assignedPeople = (b.assignedStaffIds||[]).map(id=>staffById[id]).filter(Boolean);
+                  const extPeople = (b.externalCovers||[]);
+                  const asg = assignedPeople.length + extPeople.length;
+                  const short = Math.max(0, req-asg);
+                  const covered = short===0 && req>0;
+                  return (
+                    <tr key={b.id} className="border-t">
+                      <td className="p-3 font-medium">{fmtDateEA(b.date)}</td>
+                      <td className="p-3">{b.start}–{b.end}</td>
+                      <td className="p-3">{b.roleNeeded}</td>
+                      <td className="p-3">{req}</td>
+                      <td className="p-3">
+                        {assignedPeople.length ? (
+                          <div className="flex flex-wrap gap-1">
+                            {assignedPeople.map(p => (
+                              <span key={p.id} className="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-xs">
+                                {p.firstName} {p.lastName}
+                              </span>
+                            ))}
+                            {extPeople.map((l, idx) => (
+                              <span key={(l.id||l.name||idx)} className="px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-200 text-xs text-indigo-700">
+                                Locum: {l.name}
+                              </span>
+                            ))}
+
+                          </div>
+                        ) : <span className="text-slate-500">Not assigned</span>}
+                      </td>
+                      <td className="p-3">{covered ? pill("ok","Covered") : pill("warn", `Short by ${short}`)}</td>
+                      {currentLoc === "ALL" && <td className="p-3">{locMap[b.locationId]?.name}</td>}
+                      {canManage && (
+                        <td className="p-3 text-right">
+                          <button
+                            className="text-xs px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50"
+                            onClick={()=>{ setManageBlock(b); setAssignTab("inhouse"); }}
+                          >
+                            Manage coverage
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+                {scopedBlocks.length===0 && (
+                  <tr><td className="p-4 text-slate-500" colSpan={(currentLoc==="ALL"?8:7)}>{currentLoc==="ALL" ? "No schedule blocks yet. Choose a location and add blocks." : "No schedule blocks in this scope yet."}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      
+      
+      {manageBlock && (
+        <Modal
+          title="Manage coverage"
+          onClose={() => {
+            setManageBlock(null);
+            setAssignTab("inhouse");
+            setLocumDraft({ name:"", phone:"", supervisorId:"", notes:"" });
+          }}
+        >
+          <div className="text-sm text-slate-700">
+            <div className="font-medium">
+              {fmtDateEA(manageBlock.date)} • {manageBlock.start}–{manageBlock.end} • {manageBlock.roleNeeded}
+            </div>
+            <div className="text-slate-500 mt-1">
+              Location: {locMap[manageBlock.locationId]?.name || manageBlock.locationId}
+            </div>
+            <div className="text-slate-500 mt-1">
+              Required: {Number(manageBlock.qtyNeeded||1)} • Assigned: {(manageBlock.assignedStaffIds||[]).length + (manageBlock.externalCovers||[]).length}
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center gap-2">
+            <span className="text-xs text-slate-500">Showing:</span>
+            <button
+              className={[
+                "text-xs px-2 py-1 rounded-lg border",
+                assignTab === "inhouse" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"
+              ].join(" ")}
+              onClick={() => setAssignTab("inhouse")}
+            >
+              ● Monthly staff (in-house)
+            </button>
+            <button
+              className={[
+                "text-xs px-2 py-1 rounded-lg border",
+                assignTab === "locum" ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"
+              ].join(" ")}
+              onClick={() => setAssignTab("locum")}
+            >
+              ○ External locum
+            </button>
+
+            <div className="ml-auto">
+              <button
+                className="text-xs px-2 py-1 rounded-lg border border-slate-200 hover:bg-slate-50"
+                onClick={()=>{
+                  autoAssignOne(manageBlock);
+                  // keep modal state roughly in sync for the demo
+                  setManageBlock(prev => {
+                    if(!prev) return prev;
+                    const updated = scheduleBlocks.find(x=>x.id===prev.id);
+                    return updated ? updated : prev;
+                  });
+                }}
+              >
+                Auto-assign 1 (demo)
+              </button>
+            </div>
+          </div>
+
+          {assignTab === "inhouse" ? (
+            <div className="mt-4">
+              <div className="text-xs text-slate-500 mb-2">Assign clinic staff to this schedule block</div>
+
+              <div className="flex flex-wrap gap-2 mb-3">
+                {(manageBlock.assignedStaffIds||[]).length ? (
+                  (manageBlock.assignedStaffIds||[]).map(id => {
+                    const p = staffById[id];
+                    if(!p) return null;
+                    return (
+                      <span key={id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full bg-slate-100 border border-slate-200 text-xs">
+                        {p.firstName} {p.lastName}
+                        <button
+                          className="text-slate-500 hover:text-slate-900"
+                          onClick={()=>{
+                            removeInhouseFromBlock(manageBlock.id, id);
+                            setManageBlock(prev => prev ? ({...prev, assignedStaffIds:(prev.assignedStaffIds||[]).filter(x=>x!==id)}) : prev);
+                          }}
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })
+                ) : (
+                  <span className="text-sm text-slate-500">No in-house staff assigned yet.</span>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <div className="bg-slate-50 px-3 py-2 text-xs text-slate-600">Available staff (demo list)</div>
+                <div className="max-h-56 overflow-auto divide-y">
+                  {staff
+                    .filter(s => roleFilter === "All roles" ? true : s.role === roleFilter)
+                    .map(s => {
+                      const already = (manageBlock.assignedStaffIds||[]).includes(s.id);
+                      return (
+                        <div key={s.id} className="px-3 py-2 flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-medium">{s.firstName} {s.lastName}</div>
+                            <div className="text-xs text-slate-500">{s.role}</div>
+                          </div>
+                          <button
+                            className={[
+                              "text-xs px-3 py-1.5 rounded-lg border",
+                              already ? "bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed" : "bg-white hover:bg-slate-50 border-slate-200"
+                            ].join(" ")}
+                            disabled={already}
+                            onClick={()=>{
+                              addInhouseToBlock(manageBlock.id, s.id);
+                              setManageBlock(prev => {
+                                if(!prev) return prev;
+                                const ids = new Set(prev.assignedStaffIds||[]);
+                                ids.add(s.id);
+                                return { ...prev, assignedStaffIds:Array.from(ids) };
+                              });
+                            }}
+                          >
+                            {already ? "Assigned" : "Assign"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+
+              <div className="mt-3 flex justify-end">
+                <button
+                  className="text-xs px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50"
+                  onClick={()=>{
+                    // clear in-house only
+                    updateBlock(manageBlock.id, (b)=>{ b.assignedStaffIds=[]; return b; });
+                    setManageBlock(prev => prev ? ({...prev, assignedStaffIds:[]}) : prev);
+                  }}
+                >
+                  Clear in-house
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-4">
+              <div className="text-xs text-slate-500 mb-2">Add locum / external cover (kept for payroll-ready record later)</div>
+
+              <div className="flex flex-wrap gap-2 mb-3">
+                {(manageBlock.externalCovers||[]).length ? (
+                  (manageBlock.externalCovers||[]).map(l => (
+                    <span key={l.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-xs">
+                      Locum: {l.name}
+                      <button
+                        className="text-emerald-700 hover:text-emerald-900"
+                        onClick={()=>{
+                          removeLocumFromBlock(manageBlock.id, l.id);
+                          setManageBlock(prev => prev ? ({...prev, externalCovers:(prev.externalCovers||[]).filter(x=>x.id!==l.id)}) : prev);
+                        }}
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-sm text-slate-500">No locums added yet.</span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Field label="External locum name">
+                  <input className="input" value={locumDraft.name} onChange={e=>setLocumDraft({...locumDraft, name:e.target.value})} placeholder="e.g., Jane Wanjiku" />
+                </Field>
+                <Field label="Phone (optional)">
+                  <input className="input" value={locumDraft.phone} onChange={e=>setLocumDraft({...locumDraft, phone:e.target.value})} placeholder="+254..." />
+                </Field>
+                <Field label="Supervisor (optional)">
+                  <select className="input" value={locumDraft.supervisorId} onChange={e=>setLocumDraft({...locumDraft, supervisorId:e.target.value})}>
+                    <option value="">— Select —</option>
+                    {staff.map(s=>(
+                      <option key={s.id} value={s.id}>{s.firstName} {s.lastName} ({s.role})</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Notes (optional)">
+                  <input className="input" value={locumDraft.notes} onChange={e=>setLocumDraft({...locumDraft, notes:e.target.value})} placeholder="Agency / agreed pay / reporting notes" />
+                </Field>
+              </div>
+
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button
+                  className="text-xs px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50"
+                  onClick={()=>setLocumDraft({ name:"", phone:"", supervisorId:"", notes:"" })}
+                >
+                  Clear
+                </button>
+                <button
+                  className="text-xs px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
+                  disabled={!locumDraft.name.trim()}
+                  onClick={()=>{
+                    const payload = { 
+                      name: locumDraft.name.trim(),
+                      phone: locumDraft.phone.trim(),
+                      supervisorId: locumDraft.supervisorId,
+                      notes: locumDraft.notes.trim(),
+                      roleCovered: manageBlock.roleNeeded
+                    };
+                    addLocumToBlock(manageBlock.id, payload);
+                    setManageBlock(prev => {
+                      if(!prev) return prev;
+                      const list = prev.externalCovers ? [...prev.externalCovers] : [];
+                      list.push({ id: "lc_" + Date.now(), ...payload });
+                      return { ...prev, externalCovers:list };
+                    });
+                    setLocumDraft({ name:"", phone:"", supervisorId:"", notes:"" });
+                  }}
+                >
+                  Add locum
+                </button>
+              </div>
+
+              <div className="mt-3 flex justify-end">
+                <button
+                  className="text-xs px-3 py-2 rounded-lg border border-slate-200 hover:bg-slate-50"
+                  onClick={()=>{
+                    updateBlock(manageBlock.id, (b)=>{ b.externalCovers=[]; return b; });
+                    setManageBlock(prev => prev ? ({...prev, externalCovers:[]}) : prev);
+                  }}
+                >
+                  Clear locums
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+
+
+{showShiftModal && (
+        <Modal title="Add schedule block" onClose={() => setShowShiftModal(false)}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Date (YYYY-MM-DD)">
+              <input className="input" value={newShift.date} onChange={e=>setNewShift({...newShift, date:e.target.value})} placeholder="2025-12-31" />
+            </Field>
+            <Field label="Role needed">
+              <select className="input" value={newShift.roleNeeded} onChange={e=>setNewShift({...newShift, roleNeeded:e.target.value})}>
+                <option>Nurse</option>
+                <option>Clinical Officer</option>
+                <option>Doctor</option>
+                <option>Lab Tech</option>
+                <option>Receptionist</option>
+                <option>Pharmacist</option>
+              </select>
+            </Field>
+            <Field label="Start time">
+              <input className="input" value={newShift.start} onChange={e=>setNewShift({...newShift, start:e.target.value})} placeholder="08:00" />
+            </Field>
+            <Field label="End time">
+              <input className="input" value={newShift.end} onChange={e=>setNewShift({...newShift, end:e.target.value})} placeholder="17:00" />
+            </Field>
+            <Field label="Required headcount">
+              <input className="input" type="number" min="1" value={newShift.qtyNeeded || 1} onChange={e=>setNewShift({...newShift, qtyNeeded:Number(e.target.value)})} />
+            </Field>
+          </div>
+
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button className="btnSecondary" onClick={() => setShowShiftModal(false)}>Cancel</button>
+            <button
+              className="btnPrimary"
+              onClick={() => {
+                if (!newShift.date) return;
+                const item = {
+                  id: uid("sb"),
+                  date: newShift.date,
+                  start: newShift.start,
+                  end: newShift.end,
+                  roleNeeded: newShift.roleNeeded,
+                  qtyNeeded: Number(newShift.qtyNeeded || 1),
+                  assignedStaffIds: [],
+                  externalCovers: [],
+                  locationId: currentLoc
+                };
+                setScheduleBlocks(prev => [item, ...prev]);
+                addAudit("Owner", "Added schedule block", `${fmtDateEA(item.date)} • ${item.roleNeeded} (${currentLocName})`);
+                setNewShift({ date:"", start:"08:00", end:"17:00", roleNeeded:"Nurse", rateKes:6000, status:"OPEN", qtyNeeded:1 });
+                setShowShiftModal(false);
+              }}
+            >
+              Add block
+            </button>
+          </div>
+
+          <div className="mt-3 text-xs text-slate-500">
+            Note: Schedule in HURE Core is for rostering/coverage. Pay rates belong in payroll/contracts (or CareStint).
+          </div>
+        </Modal>
+      )}
+    </PageWrap>
+  );
+};
+
+const AttendanceView = () => {
+        const staffById = useMemo(() => Object.fromEntries(staff.map(s => [s.id, s])), [staff]);
+
+        const addAttendance = () => {
+          if (currentLoc === "ALL") return;
+          const s = staff.find(x => x.locationId === currentLoc);
+          if (!s) return;
+          const today = new Date();
+          const iso = today.toISOString().slice(0,10);
+          const item = { id: uid("att"), staffId: s.id, date: iso, clockIn:"08:00", clockOut:"17:00", locationId: currentLoc };
+          setAttendance(prev => [item, ...prev]);
+          addAudit("Owner", "Added attendance", `${s.firstName} ${s.lastName} • ${fmtDateEA(iso)}`);
+        };
+
+        return (
+          <PageWrap
+            title="Attendance"
+            subtitle={currentLoc === "ALL" ? "Viewing attendance across all facilities" : `Attendance for ${currentLocName}`}
+            actions={
+              <div className="flex items-center gap-2">
+                <button
+                  className="px-4 py-2 rounded-xl text-sm font-medium bg-white border border-slate-300 hover:bg-slate-50"
+                  onClick={() => exportCSV(attendanceScoped.map(a => ({
+                    date: a.date,
+                    staff: (staffById[a.staffId] ? `${staffById[a.staffId].firstName} ${staffById[a.staffId].lastName}` : "Unknown"),
+                    clockIn: a.clockIn, clockOut: a.clockOut,
+                    location: locMap[a.locationId]?.name || ""
+                  })), `hure_attendance_${currentLoc === "ALL" ? "all" : currentLoc}.csv`)}
+                >
+                  Export CSV
+                </button>
+                <button
+                  className={[
+                    "px-4 py-2 rounded-xl text-sm font-medium",
+                    currentLoc === "ALL" ? "bg-slate-200 text-slate-500 cursor-not-allowed" : "bg-slate-900 text-white hover:bg-slate-800"
+                  ].join(" ")}
+                  disabled={currentLoc === "ALL"}
+                  onClick={addAttendance}
+                  title={currentLoc === "ALL" ? "Select a location to add attendance" : "Add demo attendance"}
+                >
+                  Quick add (demo)
+                </button>
+              </div>
+            }
+          >
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="text-left p-3">Date</th>
+                    <th className="text-left p-3">Staff</th>
+                    <th className="text-left p-3">Clock in</th>
+                    <th className="text-left p-3">Clock out</th>
+                    {currentLoc === "ALL" && <th className="text-left p-3">Location</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {attendanceScoped.map(a => (
+                    <tr key={a.id} className="border-t border-slate-200">
+                      <td className="p-3 font-medium">{fmtDateEA(a.date)}</td>
+                      <td className="p-3">{staffById[a.staffId] ? `${staffById[a.staffId].firstName} ${staffById[a.staffId].lastName}` : "Unknown"}</td>
+                      <td className="p-3">{a.clockIn}</td>
+                      <td className="p-3">{a.clockOut}</td>
+                      {currentLoc === "ALL" && <td className="p-3">{locMap[a.locationId]?.name || "-"}</td>}
+                    </tr>
+                  ))}
+                  {attendanceScoped.length === 0 && (
+                    <tr><td className="p-4 text-slate-500" colSpan={5}>No attendance in this scope.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </PageWrap>
+        );
+      };
+
+      const PayrollView = () => {
+        const [tab, setTab] = useState("SALARIED");
+        const [hidePaid, setHidePaid] = useState(true);
+
+        const visibleRows = useMemo(() => {
+          const filteredByTab = payrollRows.filter(r => (tab === "SALARIED" ? r.type === "MONTHLY" : r.type === "DAILY"));
+          return hidePaid ? filteredByTab.filter(r => r.payrollStatus !== "PAID") : filteredByTab;
+        }, [payrollRows, tab, hidePaid]);
+
+        const bulkSetStatus = (nextStatus) => {
+          setPayrollStatusMap(prev => {
+            const copy = { ...prev };
+            for (const r of visibleRows) copy[r.payrollKey] = nextStatus;
+            return copy;
+          });
+        };
+
+        const exportRows = useMemo(() => {
+          // Export ONLY Approved rows (demo requirement).
+          return visibleRows.filter(r => (r.payrollStatus === "APPROVED"));
+        }, [visibleRows]);
+
+        const exportApprovedAndMarkPaid = () => {
+          if (exportRows.length === 0) return;
+          // 1) Export CSV
+          exportCSV(exportRows.map(r => ({
+            periodOrDate: r.type === "MONTHLY" ? r.period : fmtDateEA(r.date),
+            staff: r.staffName,
+            role: r.role,
+            payBasis: r.type,
+            payrollStatus: r.payrollStatus,
+            workStatus: r.workSummary,
+            units: r.units,
+            rateKES: r.rateKes,
+            amountKES: r.amountKes,
+            hoursAudit: r.hoursAudit,
+            location: locMap[r.locationId]?.name || ""
+          })), `hure_payroll_${currentLoc === "ALL" ? "all" : currentLoc}.csv`);
+
+          // 2) Mark exported items as PAID (demo behavior)
+          setPayrollStatusMap(prev => {
+            const copy = { ...prev };
+            exportRows.forEach(r => { copy[r.payrollKey] = "PAID"; });
+            return copy;
+          });
+        };
+
+        return (
+        <PageWrap
+          title="Payroll Export"
+          subtitle={`Payroll preview from attendance • ${currentLocName}`}
+          actions={
+            <button
+              className="px-4 py-2 rounded-xl text-sm font-medium bg-slate-900 text-white hover:bg-slate-800"
+              onClick={exportApprovedAndMarkPaid}
+              disabled={exportRows.length === 0}
+              title={exportRows.length === 0 ? "Set some rows to Approved to export" : "Export Approved rows (then mark Paid)"}
+            >
+              Export Payroll CSV
+            </button>
+          }
+        >
+
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <div className="text-sm text-slate-600">Showing:</div>
+              <button
+                onClick={() => setTab("SALARIED")}
+                className={
+                  "px-3 py-1.5 rounded-xl text-sm border " +
+                  (tab === "SALARIED"
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50")
+                }
+                title="Show monthly salary rows"
+              >
+                <span className="mr-1">●</span> Monthly Salary
+              </button>
+              <button
+                onClick={() => setTab("DAILY")}
+                className={
+                  "px-3 py-1.5 rounded-xl text-sm border " +
+                  (tab === "DAILY"
+                    ? "bg-slate-900 text-white border-slate-900"
+                    : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50")
+                }
+                title="Show locum / daily rows"
+              >
+                <span className="mr-1">○</span> Casual / Daily
+              </button>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={hidePaid} onChange={(e)=>setHidePaid(e.target.checked)} />
+              Hide Paid
+            </label>
+          </div>
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr className="text-left text-slate-600">
+                  <th className="p-3">Period / Date</th>
+                  <th className="p-3">Staff</th>
+                  <th className="p-3">Pay Type</th>
+                  <th className="p-3">Work Summary</th>
+                  <th className="p-3">Payroll Status</th>
+                  <th className="p-3">Units</th>
+                  {tab === "LOCUM" && (
+                    <th className="p-3">
+                      <span className="inline-flex items-center gap-1">
+                        Daily Rate (KES)
+                        <span className="text-slate-400 cursor-help" title="Daily Rate applies to locums/casuals only (unit-based pay). Monthly salary staff do not use daily rates.">ⓘ</span>
+                      </span>
+                    </th>
+                  )}
+                  <th className="p-3">Amount (KES)</th>
+                  {currentLoc === "ALL" && <th className="p-3">Location</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map(r => (
+                  <tr key={r.id} className="border-t border-slate-200">
+                    <td className="p-3">{r.type === "MONTHLY" ? r.period : fmtDateEA(r.date)}</td>
+                    <td className="p-3">{r.staffName}</td>
+                    <td className="p-3">
+                      <span className={"px-2 py-1 rounded-full text-xs font-medium " + (r.type==="MONTHLY" ? "bg-indigo-50 text-indigo-700" : "bg-emerald-50 text-emerald-700")}>
+                        {r.type === "MONTHLY" ? "Monthly salary" : "Daily (Casual)"}
+                      </span>
+                    </td>
+                    <td className="p-3">{r.workSummary}</td>
+                    <td className="p-3">
+                      <select
+                        className="w-full rounded-xl border border-slate-200 bg-white px-2 py-1 text-sm"
+                        value={r.payrollStatus}
+                        onChange={(e) => setPayrollStatusMap(prev => ({ ...prev, [r.payrollKey]: e.target.value }))}
+                      >
+                        <option value="DRAFT">Draft</option>
+                        <option value="SUBMITTED">Submitted</option>
+                        <option value="APPROVED">Approved</option>
+                        <option value="PAID">Paid</option>
+                      </select>
+                    </td>
+                    <td className="p-3">{r.type === "MONTHLY" ? r.units : r.units}</td>
+                    {tab === "LOCUM" && <td className="p-3">{fmtKES(r.rateKes)}</td>}
+                    <td className="p-3 font-medium">{fmtKES(r.amountKes)}</td>
+                    {currentLoc === "ALL" && <td className="p-3">{locMap[r.locationId]?.name || "-"}</td>}
+                  </tr>
+                ))}
+                {visibleRows.length === 0 && (
+                  <tr><td className="p-4 text-slate-500" colSpan={currentLoc === "ALL" ? 9 : 8}>No payroll rows (add attendance first).</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-4 text-xs text-slate-500">
+            Kenya-friendly payroll model:
+            <span className="font-medium"> Locums/Casuals</span> pay by <span className="font-medium">shift units</span> (Full shift = 1, Half Day = 0.5, Absent = 0) using a daily rate.
+            <span className="font-medium"> Regular staff</span> pay by <span className="font-medium">monthly salary</span>, with attendance used for review/adjustments.
+            (Exact clock-in/out hours are still stored for audit and disputes.)
+          </div>
+        </PageWrap>
+        );
+      };
+
+
+const LeaveView = () => {
+        const staffById = useMemo(() => Object.fromEntries(staff.map(s => [s.id, s])), [staff]);
+        const canManage = has("manage_leave");
+        return (
+          <PageWrap title="Leave" subtitle={`Requests • ${currentLocName}`}>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="text-left p-3">Staff</th>
+                    <th className="text-left p-3">Type</th>
+                    <th className="text-left p-3">From</th>
+                    <th className="text-left p-3">To</th>
+                    <th className="text-left p-3">Status</th>
+                    {currentLoc === "ALL" && <th className="text-left p-3">Location</th>}
+                    {canManage && <th className="text-right p-3">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {leavesScoped.map(lv => (
+                    <tr key={lv.id} className="border-t border-slate-200">
+                      <td className="p-3 font-medium">{staffById[lv.staffId] ? `${staffById[lv.staffId].firstName} ${staffById[lv.staffId].lastName}` : "Unknown"}</td>
+                      <td className="p-3">{lv.type}</td>
+                      <td className="p-3">{fmtDateEA(lv.from)}</td>
+                      <td className="p-3">{fmtDateEA(lv.to)}</td>
+                      <td className="p-3"><span className={statusPill(lv.status)}>{lv.status}</span></td>
+                      {currentLoc === "ALL" && <td className="p-3">{locMap[lv.locationId]?.name || "-"}</td>}
+                      {canManage && (
+                        <td className="p-3 text-right">
+                          <button className="text-xs px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50 mr-2"
+                            onClick={() => { setLeaves(prev => prev.map(x => x.id===lv.id ? {...x, status:"APPROVED"} : x)); addAudit("Owner","Approved leave", lv.id); }}
+                          >Approve</button>
+                          <button className="text-xs px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50"
+                            onClick={() => { setLeaves(prev => prev.map(x => x.id===lv.id ? {...x, status:"REJECTED"} : x)); addAudit("Owner","Rejected leave", lv.id); }}
+                          >Reject</button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                  {leavesScoped.length === 0 && (
+                    <tr><td className="p-4 text-slate-500" colSpan={7}>No leave requests in this scope.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </PageWrap>
+        );
+      };
+
+      const VerificationView = () => {
+        const [tab, setTab] = useState("org"); // org | facility
+        const selectedFacility = currentLoc === "ALL" ? locations[0]?.locationId : currentLoc;
+        const facility = locations.find(l => l.locationId === selectedFacility);
+
+        const canOrg = has("manage_org_verification");
+        const canFacility = has("manage_facility_verification");
+
+        return (
+          <PageWrap
+            title="Verification"
+            subtitle="Use simple language: business verification + facility verification (instead of “KYC”)"
+          >
+            <div className="flex flex-wrap gap-2 mb-4">
+              <TabBtn label="Organization Verification" active={tab==="org"} onClick={() => setTab("org")} />
+              <TabBtn label="Facility Verification" active={tab==="facility"} onClick={() => setTab("facility")} />
+            </div>
+
+            {tab === "org" ? (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card title="Status" right={<span className={statusPill(org.orgVerification.status)}>{org.orgVerification.status.replaceAll("_"," ")}</span>}>
+                  <div className="text-sm text-slate-700">
+                    This confirms the business details for the whole organization (Head Office).
+                  </div>
+                  <div className="mt-3 text-xs text-slate-500">
+                    Fields like KRA PIN are common for Kenyan employers.
+                  </div>
+                </Card>
+
+                <div className="lg:col-span-2">
+                  <Card title="Business details">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <Field label="KRA PIN">
+                        <input
+                          className="input"
+                          value={org.orgVerification.kraPin}
+                          onChange={(e) => setOrg(prev => ({ ...prev, orgVerification: { ...prev.orgVerification, kraPin: e.target.value } }))}
+                          placeholder="e.g., A123456789B"
+                          disabled={!canOrg}
+                        />
+                      </Field>
+                      <Field label="Business registration number (optional)">
+                        <input
+                          className="input"
+                          value={org.orgVerification.businessRegNo}
+                          onChange={(e) => setOrg(prev => ({ ...prev, orgVerification: { ...prev.orgVerification, businessRegNo: e.target.value } }))}
+                          placeholder="Optional"
+                          disabled={!canOrg}
+                        />
+                      </Field>
+                      <Field label="Verification status">
+                        <select
+                          className="input"
+                          value={org.orgVerification.status}
+                          onChange={(e) => { setOrg(prev => ({ ...prev, orgVerification: { ...prev.orgVerification, status: e.target.value } })); addAudit("Owner","Updated organization verification", e.target.value); }}
+                          disabled={!canOrg}
+                        >
+                          <option value="PENDING_REVIEW">Pending review</option>
+                          <option value="APPROVED">Approved</option>
+                          <option value="REJECTED">Rejected</option>
+                          <option value="SUSPENDED">Suspended</option>
+                        </select>
+                      </Field>
+                    </div>
+
+                    <div className="mt-4 p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-700">
+                      <div className="font-semibold mb-1">How this affects access</div>
+                      <ul className="list-disc pl-5">
+                        <li>If organization verification is not approved, facilities can still upload their documents, but you can restrict “go‑live” actions.</li>
+                        <li>Facility verification is done per location (license + expiry).</li>
+                      </ul>
+                    </div>
+                  </Card>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card
+                  title="Facility selection"
+                  right={facility ? <span className={statusPill(facility.facilityVerification.status)}>{facility.facilityVerification.status.replaceAll("_"," ")}</span> : null}
+                >
+                  <div className="text-sm text-slate-700 mb-2">Choose which facility you’re verifying.</div>
+                  <select
+                    className="input"
+                    value={selectedFacility || ""}
+                    onChange={(e) => setCurrentLoc(e.target.value)}
+                    disabled={currentLoc !== "ALL"} // selection is via global switcher unless viewing ALL
+                    title={currentLoc === "ALL" ? "" : "Use the top Location switcher to change facilities."}
+                  >
+                    {locations.map(l => <option key={l.locationId} value={l.locationId}>{l.name}</option>)}
+                  </select>
+                  <div className="text-xs text-slate-500 mt-2">
+                    Tip: use the location switcher at the top for faster navigation.
+                  </div>
+                </Card>
+
+                <div className="lg:col-span-2">
+                  <Card title="License details (per facility)">
+                    {!facility ? (
+                      <div className="text-sm text-slate-500">No facility selected.</div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <Field label="Licensing body">
+                            <select
+                              className="input"
+                              value={facility.facilityVerification.body}
+                              onChange={(e) => {
+                                setLocations(prev => prev.map(l => l.locationId === facility.locationId ? ({
+                                  ...l,
+                                  facilityVerification: { ...l.facilityVerification, body: e.target.value }
+                                }) : l));
+                              }}
+                              disabled={!canFacility}
+                            >
+                              <option value="KMPDC">KMPDC</option>
+                              <option value="NCK">NCK</option>
+                              <option value="PPB">PPB</option>
+                              <option value="COC">Clinical Officers Council</option>
+                              <option value="OTHER">Other</option>
+                            </select>
+                          </Field>
+                          <Field label="License number">
+                            <input
+                              className="input"
+                              value={facility.facilityVerification.licenseNo}
+                              onChange={(e) => {
+                                setLocations(prev => prev.map(l => l.locationId === facility.locationId ? ({
+                                  ...l,
+                                  facilityVerification: { ...l.facilityVerification, licenseNo: e.target.value }
+                                }) : l));
+                              }}
+                              disabled={!canFacility}
+                            />
+                          </Field>
+                          <Field label="License expiry (YYYY-MM-DD)">
+                            <input
+                              className="input"
+                              value={facility.facilityVerification.expiry}
+                              onChange={(e) => {
+                                setLocations(prev => prev.map(l => l.locationId === facility.locationId ? ({
+                                  ...l,
+                                  facilityVerification: { ...l.facilityVerification, expiry: e.target.value }
+                                }) : l));
+                              }}
+                              disabled={!canFacility}
+                              placeholder="2026-08-30"
+                            />
+                          </Field>
+                          <Field label="Verification status">
+                            <select
+                              className="input"
+                              value={facility.facilityVerification.status}
+                              onChange={(e) => {
+                                setLocations(prev => prev.map(l => l.locationId === facility.locationId ? ({
+                                  ...l,
+                                  facilityVerification: { ...l.facilityVerification, status: e.target.value }
+                                }) : l));
+                                addAudit("Owner","Updated facility verification", `${facility.name} → ${e.target.value}`);
+                              }}
+                              disabled={!canFacility}
+                            >
+                              <option value="DRAFT">Draft</option>
+                              <option value="PENDING_REVIEW">Pending review</option>
+                              <option value="APPROVED">Approved</option>
+                              <option value="REJECTED">Rejected</option>
+                              <option value="EXPIRED">Expired</option>
+                            </select>
+                          </Field>
+                        </div>
+
+                        <div className="mt-4 p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-700">
+                          <div className="font-semibold mb-1">Suggested user-facing wording</div>
+                          <ul className="list-disc pl-5">
+                            <li>“Facility verification” instead of “KYC”</li>
+                            <li>“License documents” instead of “KYC documents”</li>
+                            <li>“Pending review” instead of “KYC pending”</li>
+                          </ul>
+                        </div>
+                      </>
+                    )}
+                  </Card>
+                </div>
+              </div>
+            )}
+          </PageWrap>
+        );
+      };
+
+      const SettingsView = () => {
+        const [tab, setTab] = useState("org"); // org | location
+        const canOrg = has("manage_org_settings");
+        const canLoc = has("manage_location_settings");
+
+        const selectedFacility = currentLoc === "ALL" ? locations[0]?.locationId : currentLoc;
+        const facility = locations.find(l => l.locationId === selectedFacility);
+
+        const limits = planLimits(org.plan.tier);
+        const canAddLocation = locations.length < limits.locations;
+
+        return (
+          <PageWrap title="Settings" subtitle="Organization settings vs location settings">
+            <div className="flex flex-wrap gap-2 mb-4">
+              <TabBtn label="Organization" active={tab==="org"} onClick={() => setTab("org")} />
+              <TabBtn label="Location" active={tab==="location"} onClick={() => setTab("location")} />
+            </div>
+
+            {tab === "org" ? (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card title="Organization profile">
+                  <Field label="Organization name">
+                    <input className="input" value={org.orgName} disabled={!canOrg}
+                      onChange={(e) => setOrg(prev => ({ ...prev, orgName: e.target.value }))}
+                    />
+                  </Field>
+                  <div className="mt-3 text-xs text-slate-500">
+                    This name appears across all locations.
+                  </div>
+                </Card>
+
+                <Card title="Plan + limits" right={<span className={statusPill(org.plan.status)}>{org.plan.status}</span>}>
+                  <div className="text-sm text-slate-700">Tier: <span className="font-semibold">{org.plan.tier}</span></div>
+                  <div className="text-sm text-slate-700 mt-1">Renewal: <span className="font-medium">{fmtDateEA(org.plan.renewOn)}</span></div>
+                  <div className="text-sm text-slate-700 mt-2">
+                    Included: <span className="font-medium">{limits.locations} location(s)</span>, <span className="font-medium">{limits.staff} staff</span>
+                  </div>
+                  <div className="mt-3">
+                    <button
+                      className="px-3 py-2 rounded-xl border border-slate-300 text-sm hover:bg-slate-50"
+                      onClick={() => setView("billing")}
+                    >
+                      Go to Billing
+                    </button>
+                  </div>
+                </Card>
+
+                <Card title="Locations">
+                  <div className="text-sm text-slate-700 mb-2">
+                    You have <span className="font-semibold">{locations.length}</span> location(s).
+                  </div>
+                  <ul className="text-sm text-slate-700 space-y-1">
+                    {locations.map(l => (
+                      <li key={l.locationId} className="flex items-center justify-between">
+                        <span>{l.name}</span>
+                        <span className={statusPill(l.facilityVerification.status)}>{l.facilityVerification.status.replaceAll("_"," ")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-3 text-xs text-slate-500">
+                    Add/remove locations is controlled by plan limits.
+                  </div>
+                  <div className="mt-3">
+                    <button
+                      className={[
+                        "px-3 py-2 rounded-xl text-sm font-medium",
+                        canAddLocation && canOrg ? "bg-slate-900 text-white hover:bg-slate-800" : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                      ].join(" ")}
+                      disabled={!canAddLocation || !canOrg}
+                      onClick={() => {
+                        const next = {
+                          locationId: uid("loc"),
+                          name: "New Location",
+                          address: { town:"", street:"" },
+                          contact: { phone:"", email:"" },
+                          facilityVerification: { status:"DRAFT", licenseNo:"", body:"KMPDC", expiry:"", docs:[] },
+                          settings: { timezone:"Africa/Nairobi" }
+                        };
+                        setLocations(prev => [...prev, next]);
+                        addAudit("Owner","Added location", next.locationId);
+                      }}
+                    >
+                      Add location
+                    </button>
+                  </div>
+                </Card>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <Card title="Select location">
+                  <select
+                    className="input"
+                    value={selectedFacility || ""}
+                    onChange={(e) => setCurrentLoc(e.target.value)}
+                    disabled={currentLoc !== "ALL"}
+                    title={currentLoc === "ALL" ? "" : "Use the top Location switcher to change locations."}
+                  >
+                    {locations.map(l => <option key={l.locationId} value={l.locationId}>{l.name}</option>)}
+                  </select>
+                  <div className="text-xs text-slate-500 mt-2">
+                    Tip: use the location switcher at the top.
+                  </div>
+                </Card>
+
+                <div className="lg:col-span-2">
+                  <Card title="Location details">
+                    {!facility ? (
+                      <div className="text-sm text-slate-500">No location selected.</div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <Field label="Location name">
+                          <input className="input" disabled={!canLoc} value={facility.name}
+                            onChange={(e) => setLocations(prev => prev.map(l => l.locationId===facility.locationId ? ({...l, name:e.target.value}) : l))}
+                          />
+                        </Field>
+                        <Field label="Town / City">
+                          <input className="input" disabled={!canLoc} value={facility.address.town}
+                            onChange={(e) => setLocations(prev => prev.map(l => l.locationId===facility.locationId ? ({...l, address:{...l.address, town:e.target.value}}) : l))}
+                          />
+                        </Field>
+                        <Field label="Street / Area">
+                          <input className="input" disabled={!canLoc} value={facility.address.street}
+                            onChange={(e) => setLocations(prev => prev.map(l => l.locationId===facility.locationId ? ({...l, address:{...l.address, street:e.target.value}}) : l))}
+                          />
+                        </Field>
+                        <Field label="Facility phone">
+                          <input className="input" disabled={!canLoc} value={facility.contact.phone}
+                            onChange={(e) => setLocations(prev => prev.map(l => l.locationId===facility.locationId ? ({...l, contact:{...l.contact, phone:e.target.value}}) : l))}
+                          />
+                        </Field>
+                        <Field label="Facility email">
+                          <input className="input" disabled={!canLoc} value={facility.contact.email}
+                            onChange={(e) => setLocations(prev => prev.map(l => l.locationId===facility.locationId ? ({...l, contact:{...l.contact, email:e.target.value}}) : l))}
+                          />
+                        </Field>
+                        <Field label="Timezone">
+                          <input className="input" disabled={!canLoc} value={facility.settings.timezone}
+                            onChange={(e) => setLocations(prev => prev.map(l => l.locationId===facility.locationId ? ({...l, settings:{...l.settings, timezone:e.target.value}}) : l))}
+                          />
+                        </Field>
+                      </div>
+                    )}
+                  </Card>
+                </div>
+              </div>
+            )}
+          </PageWrap>
+        );
+      };
+
+      
+      const PermissionsView = () => {
+        const roles = rolesState?.roles || {};
+        const ownerPerms = roles?.OWNER || [];
+        const permRows = [
+          { id: "view_staff", label: "View staff" },
+          { id: "manage_staff", label: "Create / Edit staff" },
+          { id: "invite_staff", label: "Invite staff" },
+          { id: "view_schedule", label: "View schedule" },
+          { id: "manage_schedule", label: "Create / Manage shifts" },
+          { id: "view_attendance", label: "View attendance" },
+          { id: "export_payroll", label: "Export payroll" },
+          { id: "view_leave", label: "View leave" },
+          { id: "manage_leave", label: "Approve / Manage leave" },
+          { id: "view_docs", label: "View documents" },
+          { id: "manage_docs", label: "Upload / Manage documents" },
+          { id: "view_billing", label: "View billing" },
+          { id: "manage_org_settings", label: "Manage organization settings" },
+          { id: "manage_location_settings", label: "Manage location settings" },
+          { id: "view_audit", label: "View audit log" },
+        ];
+
+        const toggle = (roleKey, permId) => {
+          setRolesState(prev => {
+            const next = structuredClone(prev || DEFAULT_ROLES);
+            next.roles = next.roles || {};
+            const cur = Array.isArray(next.roles[roleKey]) ? next.roles[roleKey] : [];
+            const hasIt = cur.includes(permId);
+            next.roles[roleKey] = hasIt ? cur.filter(p => p !== permId) : [...cur, permId];
+            addAudit("Owner", "Updated permissions", `${roleKey}: ${permId} → ${hasIt ? "OFF" : "ON"}`);
+            return next;
+          });
+        };
+
+        const cell = (roleKey, permId, disabled=false) => {
+          const list = roleKey === "OWNER" ? ownerPerms : (roles?.[roleKey] || []);
+          const checked = list.includes(permId);
+          return (
+            <td className="py-2 px-3 border-t border-slate-200 text-center">
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={disabled}
+                onChange={() => toggle(roleKey, permId)}
+              />
+            </td>
+          );
+        };
+
+        return (
+          <PageWrap title="Permissions" subtitle="Permissions & Roles">
+            <Card>
+              <div className="p-4">
+                <div className="text-sm text-slate-600 mb-3">
+                  Owner is locked with full access. Toggle Admin, HR, and Employee access below.
+                </div>
+
+                <div className="overflow-auto rounded-2xl border border-slate-200">
+                  <table className="min-w-[820px] w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="text-left py-3 px-3 font-semibold text-slate-700">Permission</th>
+                        <th className="py-3 px-3 font-semibold text-slate-700">Owner</th>
+                        <th className="py-3 px-3 font-semibold text-slate-700">Admin</th>
+                        <th className="py-3 px-3 font-semibold text-slate-700">HR</th>
+                        <th className="py-3 px-3 font-semibold text-slate-700">Employee</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {permRows.map(row => (
+                        <tr key={row.id} className="bg-white">
+                          <td className="py-2 px-3 border-t border-slate-200 text-slate-700">{row.label}</td>
+                          {cell("OWNER", row.id, true)}
+                          {cell("ADMIN", row.id)}
+                          {cell("HR", row.id)}
+                          {cell("EMPLOYEE", row.id)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mt-4 text-xs text-slate-500">
+                  Tip: Keep permissions simple. You can expand later (e.g., approvals, payroll processing, locum access).
+                </div>
+              </div>
+            </Card>
+          </PageWrap>
+        );
+      };
+
+
+const BillingView = () => {
+        const limits = planLimits(org.plan.tier);
+        const overLocations = locations.length > limits.locations;
+        const overStaff = staff.length > limits.staff;
+
+        return (
+          <PageWrap title="Billing" subtitle="Organization-level subscription (locations inherit plan)">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card title="Current plan" right={<span className={statusPill(org.plan.status)}>{org.plan.status}</span>}>
+                <div className="text-sm text-slate-700">Tier: <span className="font-semibold">{org.plan.tier}</span></div>
+                <div className="text-sm text-slate-700 mt-1">Renewal: <span className="font-medium">{fmtDateEA(org.plan.renewOn)}</span></div>
+                <div className="text-sm text-slate-700 mt-2">Currency: <span className="font-medium">{org.billing.currency}</span></div>
+              </Card>
+
+              <Card title="Plan limits">
+                <div className="text-sm text-slate-700">Included locations: <span className="font-semibold">{limits.locations}</span></div>
+                <div className="text-sm text-slate-700 mt-1">Included staff: <span className="font-semibold">{limits.staff}</span></div>
+                <div className="mt-3 text-xs">
+                  <div className={overLocations ? "text-rose-700" : "text-emerald-700"}>
+                    {overLocations ? "⚠️ You are above your location limit." : "✓ Locations within limit."}
+                  </div>
+                  <div className={overStaff ? "text-rose-700 mt-1" : "text-emerald-700 mt-1"}>
+                    {overStaff ? "⚠️ You are above your staff limit." : "✓ Staff within limit."}
+                  </div>
+                </div>
+              </Card>
+
+              <Card title="Invoices">
+                <div className="text-sm text-slate-700">Last invoice: <span className="font-medium">{org.billing.lastInvoiceId}</span></div>
+                <div className="text-xs text-slate-500 mt-2">
+                  In production, invoices would list line items such as plan + add-ons (extra locations, extra staff).
+                </div>
+                <div className="mt-3">
+                  <button
+                    className="px-3 py-2 rounded-xl border border-slate-300 text-sm hover:bg-slate-50"
+                    onClick={() => addAudit("Owner","Viewed billing", `Plan ${org.plan.tier}`)}
+                  >
+                    Log “Viewed billing”
+                  </button>
+                </div>
+              </Card>
+            </div>
+
+            <div className="mt-4 p-4 rounded-2xl bg-white border border-slate-200 text-sm text-slate-700">
+              <div className="font-semibold mb-1">Why subscription is organization-level</div>
+              <ul className="list-disc pl-5">
+                <li>It avoids confusion like “Nairobi is Professional but Kisumu is Essential.”</li>
+                <li>Billing stays clean (one plan, clear add-ons).</li>
+                <li>Permissions and feature access remain consistent across locations.</li>
+              </ul>
+            </div>
+          </PageWrap>
+        );
+      };
+
+      const DocsView = () => {
+        const canManage = has("manage_docs");
+        const [newDocName, setNewDocName] = useState("");
+        const addDoc = () => {
+          if (!newDocName.trim()) return;
+          const scope = currentLoc === "ALL" ? "ORG" : "LOCATION";
+          const item = {
+            id: uid("doc"),
+            name: newDocName.trim(),
+            scope,
+            locationId: scope === "LOCATION" ? currentLoc : null,
+            uploadedAt: new Date().toISOString().slice(0,10),
+          };
+          setDocs(prev => [item, ...prev]);
+          addAudit("Owner","Uploaded document", `${item.name} (${scope})`);
+          setNewDocName("");
+        };
+
+        return (
+          <PageWrap
+            title="Documents"
+            subtitle={`Org documents show everywhere. Location documents show only for that facility. • ${currentLocName}`}
+            actions={canManage && (
+              <div className="flex items-center gap-2">
+                <input className="px-3 py-2 rounded-xl border border-slate-300 text-sm bg-white"
+                  value={newDocName} onChange={e=>setNewDocName(e.target.value)} placeholder="e.g., SOP, Policy, Template..."
+                />
+                <button className="px-4 py-2 rounded-xl text-sm font-medium bg-slate-900 text-white hover:bg-slate-800" onClick={addDoc}>
+                  Add
+                </button>
+              </div>
+            )}
+          >
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="text-left p-3">Document</th>
+                    <th className="text-left p-3">Scope</th>
+                    <th className="text-left p-3">Uploaded</th>
+                    {currentLoc === "ALL" && <th className="text-left p-3">Location</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {docsScoped.map(d => (
+                    <tr key={d.id} className="border-t border-slate-200">
+                      <td className="p-3 font-medium">{d.name}</td>
+                      <td className="p-3"><span className={statusPill(d.scope)}>{d.scope}</span></td>
+                      <td className="p-3">{fmtDateEA(d.uploadedAt)}</td>
+                      {currentLoc === "ALL" && <td className="p-3">{d.scope === "LOCATION" ? (locMap[d.locationId]?.name || "-") : "All locations"}</td>}
+                    </tr>
+                  ))}
+                  {docsScoped.length === 0 && (
+                    <tr><td className="p-4 text-slate-500" colSpan={4}>No documents in this scope.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </PageWrap>
+        );
+      };
+
+      const AuditView = () => {
+        const rows = useMemo(() => {
+          // show all audit, but if scoped and not ALL, filter
+          if (currentLoc === "ALL") return audit;
+          return audit.filter(a => a.locationId === currentLoc || a.locationId === "ALL");
+        }, [audit, currentLoc]);
+
+        return (
+          <PageWrap title="Audit Log" subtitle={`Recent actions • ${currentLocName}`}>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="text-left p-3">Time</th>
+                    <th className="text-left p-3">Actor</th>
+                    <th className="text-left p-3">Action</th>
+                    <th className="text-left p-3">Detail</th>
+                    {currentLoc === "ALL" && <th className="text-left p-3">Location scope</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(a => (
+                    <tr key={a.id} className="border-t border-slate-200">
+                      <td className="p-3">{new Date(a.at).toLocaleString()}</td>
+                      <td className="p-3 font-medium">{a.actor}</td>
+                      <td className="p-3">{a.action}</td>
+                      <td className="p-3 text-slate-700">{a.detail}</td>
+                      {currentLoc === "ALL" && <td className="p-3">{a.locationId}</td>}
+                    </tr>
+                  ))}
+                  {rows.length === 0 && (
+                    <tr><td className="p-4 text-slate-500" colSpan={5}>No audit entries yet.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </PageWrap>
+        );
+      };
+
+      const TabBtn = ({label, active, onClick}) => (
+        <button
+          onClick={onClick}
+          className={[
+            "px-3 py-2 rounded-xl text-sm border",
+            active ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-800 border-slate-300 hover:bg-slate-50"
+          ].join(" ")}
+        >
+          {label}
+        </button>
+      );
+
+      // ---- Shared UI bits ----
+      const Modal = ({title, children, onClose}) => (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+          <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-xl border border-slate-200 p-4">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="text-lg font-bold">{title}</div>
+              <button className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50" onClick={onClose}>Close</button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+
+      const Field = ({label, children}) => (
+        <label className="block">
+          <div className="text-xs font-medium text-slate-600 mb-1">{label}</div>
+          {children}
+        </label>
+      );
+
+      // minimal utility classes (tailwind via className)
+      // use these as className strings:
+      // - input, btnPrimary, btnSecondary
+      // We'll define them via inline style mapping:
+      useEffect(() => {
+        // no-op; just to keep Babel happy if we wanted dynamic classes
+      }, []);
+
+      // inject helper classes
+      const style = document.createElement("style");
+      style.innerHTML = `
+        .input { width: 100%; padding: .6rem .75rem; border-radius: .85rem; border: 1px solid rgb(203 213 225); background: white; font-size: .875rem; }
+        .btnPrimary { padding: .6rem 1rem; border-radius: .85rem; background: rgb(15 23 42); color: white; font-size: .875rem; font-weight: 600; }
+        .btnPrimary:hover { background: rgb(30 41 59); }
+        .btnSecondary { padding: .6rem 1rem; border-radius: .85rem; border: 1px solid rgb(203 213 225); background: white; font-size: .875rem; }
+        .btnSecondary:hover { background: rgb(248 250 252); }
+      `;
+      if (!document.getElementById("hure-demo-style")) {
+        style.id = "hure-demo-style";
+        document.head.appendChild(style);
+      }
+
+      // Route view renderer
+      const Main = () => {
+        if (view === "dashboard") return <DashboardView />;
+        if (view === "staff") return <StaffView />;
+        if (view === "schedule") return <ScheduleView />;
+        if (view === "attendance") return <AttendanceView />;
+        if (view === "payroll") return <PayrollView />;
+        if (view === "leave") return <LeaveView />;
+        if (view === "verification") return <VerificationView />;
+        if (view === "settings") return <SettingsView />;
+        if (view === "permissions") return <PermissionsView />;
+        if (view === "billing") return <BillingView />;
+        if (view === "docs") return <DocsView />;
+        if (view === "audit") return <AuditView />;
+        return <DashboardView />;
+      };
+
+      return (
+        <div className="min-h-screen">
+          <TopBar />
+          <div className="grid grid-cols-1 md:grid-cols-[16rem_1fr]">
+            <Sidebar />
+            <div className="min-h-[calc(100vh-60px)]">
+              <Main />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<HureCoreEmployerDemo />);
+  </script>
+</body>
+</html>

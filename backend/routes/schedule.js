@@ -92,7 +92,8 @@ router.post('/:blockId/assign', authMiddleware, async (req, res) => {
                 is_external: isExternal || false,
                 external_name: externalName,
                 external_phone: externalPhone,
-                external_notes: externalNotes
+                external_notes: externalNotes,
+                status: 'pending'  // Requires employee to accept
             })
             .select()
             .single()
@@ -106,6 +107,60 @@ router.post('/:blockId/assign', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('Assign shift error:', err)
         res.status(500).json({ error: 'Failed to assign shift' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/schedule/:blockId - Delete a shift
+router.delete('/:blockId', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, blockId } = req.params
+
+        // First delete any assignments
+        await supabaseAdmin
+            .from('schedule_assignments')
+            .delete()
+            .eq('schedule_block_id', blockId)
+
+        // Then delete the shift
+        const { error } = await supabaseAdmin
+            .from('schedule_blocks')
+            .delete()
+            .eq('id', blockId)
+            .eq('clinic_id', clinicId)
+
+        if (error) {
+            console.error('Delete shift error:', error)
+            return res.status(500).json({ error: 'Failed to delete shift' })
+        }
+
+        console.log('✅ Shift deleted:', blockId)
+        res.json({ success: true, message: 'Shift deleted successfully' })
+    } catch (err) {
+        console.error('Delete shift error:', err)
+        res.status(500).json({ error: 'Failed to delete shift' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/schedule/:blockId/unassign/:assignmentId - Unassign staff from shift
+router.delete('/:blockId/unassign/:assignmentId', authMiddleware, async (req, res) => {
+    try {
+        const { assignmentId } = req.params
+
+        const { error } = await supabaseAdmin
+            .from('schedule_assignments')
+            .delete()
+            .eq('id', assignmentId)
+
+        if (error) {
+            console.error('Unassign shift error:', error)
+            return res.status(500).json({ error: 'Failed to unassign staff' })
+        }
+
+        console.log('✅ Staff unassigned from shift:', assignmentId)
+        res.json({ success: true, message: 'Staff unassigned successfully' })
+    } catch (err) {
+        console.error('Unassign shift error:', err)
+        res.status(500).json({ error: 'Failed to unassign staff' })
     }
 })
 

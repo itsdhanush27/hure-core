@@ -149,21 +149,21 @@ export default function EmployerDashboard() {
             {
                 key: 'essential',
                 name: 'Essential',
-                price: 'KES 2,500/mo',
-                features: ['1 Location', '10 Staff Members', '2 Admin Seats', 'Basic Scheduling', 'Attendance Tracking']
+                price: 'KES 8,000/mo',
+                features: ['1 Location', '10 Staff Members', '2 Admin Roles', 'Basic Scheduling', 'Attendance Tracking']
             },
             {
                 key: 'professional',
                 name: 'Professional',
-                price: 'KES 5,000/mo',
+                price: 'KES 15,000/mo',
                 popular: true,
-                features: ['2 Locations', '30 Staff Members', '5 Admin Seats', 'Advanced Scheduling', 'Leave Management', 'Payroll Export']
+                features: ['2 Locations', '30 Staff Members', '5 Admin Roles', 'Advanced Scheduling', 'Leave Management', 'Payroll Export']
             },
             {
                 key: 'enterprise',
                 name: 'Enterprise',
-                price: 'KES 10,000/mo',
-                features: ['5 Locations', '75 Staff Members', '10 Admin Seats', 'All Features', 'Priority Support', 'Custom Integrations']
+                price: 'KES 25,000/mo',
+                features: ['5 Locations', '75 Staff Members', '10 Admin Roles', 'All Features', 'Priority Support', 'Custom Integrations']
             }
         ]
 
@@ -456,11 +456,14 @@ export default function EmployerDashboard() {
 
     const StaffView = () => {
         const [showAddForm, setShowAddForm] = useState(false)
+        const [showEditForm, setShowEditForm] = useState(false)
+        const [editingStaff, setEditingStaff] = useState(null)
         const [newStaff, setNewStaff] = useState({
             first_name: '', last_name: '', email: '', phone: '',
-            job_title: '', location_id: '', hourly_rate: '', hire_date: ''
+            job_title: '', location_id: '', employment_type: 'full-time', pay_rate: '', hire_date: ''
         })
         const [adding, setAdding] = useState(false)
+        const [updating, setUpdating] = useState(false)
         const canAddStaff = org.staffCount < limits.staff
 
         const handleAddStaff = async (e) => {
@@ -484,7 +487,7 @@ export default function EmployerDashboard() {
                         staffCount: prev.staffCount + 1
                     }))
                     setShowAddForm(false)
-                    setNewStaff({ first_name: '', last_name: '', email: '', phone: '', job_title: '', location_id: '', hourly_rate: '', hire_date: '' })
+                    setNewStaff({ first_name: '', last_name: '', email: '', phone: '', job_title: '', location_id: '', employment_type: 'full-time', pay_rate: '', hire_date: '' })
                 } else {
                     const err = await res.json()
                     alert(err.error || 'Failed to add staff')
@@ -496,12 +499,84 @@ export default function EmployerDashboard() {
             }
         }
 
+        const handleEditStaff = (staff) => {
+            setEditingStaff({
+                id: staff.id,
+                first_name: staff.first_name || '',
+                last_name: staff.last_name || '',
+                email: staff.email || '',
+                phone: staff.phone || '',
+                job_title: staff.job_title || '',
+                location_id: staff.location_id || '',
+                employment_type: staff.employment_type || 'full-time',
+                pay_rate: staff.pay_rate || '',
+                is_active: staff.is_active !== false
+            })
+            setShowEditForm(true)
+        }
+
+        const handleUpdateStaff = async (e) => {
+            e.preventDefault()
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            setUpdating(true)
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/staff/${editingStaff.id}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify(editingStaff)
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    setOrg(prev => ({
+                        ...prev,
+                        staff: prev.staff.map(s => s.id === editingStaff.id ? data.staff : s)
+                    }))
+                    setShowEditForm(false)
+                    setEditingStaff(null)
+                } else {
+                    const err = await res.json()
+                    alert(err.error || 'Failed to update staff')
+                }
+            } catch (err) {
+                console.error('Update staff error:', err)
+            } finally {
+                setUpdating(false)
+            }
+        }
+
+        const handleDeleteStaff = async (staffId, staffName) => {
+            if (!confirm(`Are you sure you want to delete ${staffName}? This cannot be undone.`)) {
+                return
+            }
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/staff/${staffId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    setOrg(prev => ({
+                        ...prev,
+                        staff: prev.staff.filter(s => s.id !== staffId),
+                        staffCount: prev.staffCount - 1
+                    }))
+                } else {
+                    alert('Failed to delete staff')
+                }
+            } catch (err) {
+                console.error('Delete staff error:', err)
+            }
+        }
+
         return (
             <div className="space-y-6">
                 <div className="flex items-center justify-between">
                     <div>
                         <h1 className="text-xl font-bold">Staff Management</h1>
-                        <p className="text-slate-500 text-sm">{org.staffCount} of {limits.staff} staff used</p>
+                        <p className="text-slate-500 text-sm">{org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app')).length} of {limits.staff} staff used</p>
                     </div>
                     <button
                         onClick={() => setShowAddForm(true)}
@@ -588,12 +663,25 @@ export default function EmployerDashboard() {
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Hourly Rate (KSh)</label>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Employment Type *</label>
+                                    <select
+                                        value={newStaff.employment_type}
+                                        onChange={(e) => setNewStaff({ ...newStaff, employment_type: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                        required
+                                    >
+                                        <option value="full-time">Full-Time (Salary)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                                        Monthly Salary (KSh)
+                                    </label>
                                     <input
                                         type="number"
-                                        value={newStaff.hourly_rate}
-                                        onChange={(e) => setNewStaff({ ...newStaff, hourly_rate: e.target.value })}
-                                        placeholder="e.g., 500"
+                                        value={newStaff.pay_rate}
+                                        onChange={(e) => setNewStaff({ ...newStaff, pay_rate: e.target.value })}
+                                        placeholder="e.g., 45000"
                                         className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                     />
                                 </div>
@@ -642,26 +730,113 @@ export default function EmployerDashboard() {
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Email</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Location</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
+                                    <th className="text-left p-3 text-sm font-medium text-slate-600">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {org.staff.map(s => (
-                                    <tr key={s.id} className="border-t hover:bg-slate-50">
-                                        <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                        <td className="p-3">{s.job_title || s.role}</td>
-                                        <td className="p-3 text-sm text-slate-500">{s.email}</td>
-                                        <td className="p-3">{s.location?.name || s.clinic_locations?.name || '-'}</td>
-                                        <td className="p-3">
-                                            <span className={`px-2 py-1 rounded text-xs ${s.is_active !== false ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                                                {s.is_active !== false ? 'Active' : 'Inactive'}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                ))}
+                                {org.staff
+                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                    .map(s => (
+                                        <tr key={s.id} className="border-t hover:bg-slate-50">
+                                            <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
+                                            <td className="p-3">{s.job_title || s.role}</td>
+                                            <td className="p-3 text-sm text-slate-500">{s.email}</td>
+                                            <td className="p-3">{s.location?.name || s.clinic_locations?.name || '-'}</td>
+                                            <td className="p-3">
+                                                <span className={`px-2 py-1 rounded text-xs ${s.is_active !== false ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                    {s.is_active !== false ? 'Active' : 'Inactive'}
+                                                </span>
+                                            </td>
+                                            <td className="p-3">
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        onClick={() => handleEditStaff(s)}
+                                                        className="text-primary-600 hover:text-primary-700 text-sm font-medium"
+                                                    >
+                                                        Edit
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeleteStaff(s.id, `${s.first_name} ${s.last_name}`)}
+                                                        className="text-red-600 hover:text-red-700 text-sm font-medium"
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
                             </tbody>
                         </table>
                     )}
                 </Card>
+
+                {/* Edit Staff Modal */}
+                {showEditForm && editingStaff && (
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+                            <div className="p-4 border-b flex items-center justify-between">
+                                <h2 className="text-lg font-bold">Edit Staff Member</h2>
+                                <button onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="text-slate-400 hover:text-slate-600 text-2xl">×</button>
+                            </div>
+                            <form onSubmit={handleUpdateStaff} className="p-4 space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">First Name *</label>
+                                        <input type="text" value={editingStaff.first_name} onChange={(e) => setEditingStaff({ ...editingStaff, first_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Last Name *</label>
+                                        <input type="text" value={editingStaff.last_name} onChange={(e) => setEditingStaff({ ...editingStaff, last_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                                    <input type="email" value={editingStaff.email} onChange={(e) => setEditingStaff({ ...editingStaff, email: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
+                                    <input type="tel" value={editingStaff.phone} onChange={(e) => setEditingStaff({ ...editingStaff, phone: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Job Title / Role</label>
+                                    <input type="text" value={editingStaff.job_title} onChange={(e) => setEditingStaff({ ...editingStaff, job_title: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
+                                    <select value={editingStaff.location_id} onChange={(e) => setEditingStaff({ ...editingStaff, location_id: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
+                                        <option value="">No location</option>
+                                        {org.locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
+                                    </select>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Employment Type</label>
+                                        <select value={editingStaff.employment_type} onChange={(e) => setEditingStaff({ ...editingStaff, employment_type: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
+                                            <option value="full-time">Full-time</option>
+                                            <option value="part-time">Part-time</option>
+                                            <option value="casual">Casual</option>
+                                            <option value="contract">Contract</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Pay Rate (KES)</label>
+                                        <input type="number" value={editingStaff.pay_rate} onChange={(e) => setEditingStaff({ ...editingStaff, pay_rate: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <input type="checkbox" id="is_active" checked={editingStaff.is_active} onChange={(e) => setEditingStaff({ ...editingStaff, is_active: e.target.checked })} className="rounded" />
+                                    <label htmlFor="is_active" className="text-sm text-slate-700">Active Employee</label>
+                                </div>
+                                <div className="flex gap-3 pt-2">
+                                    <button type="submit" disabled={updating} className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2 rounded-lg font-medium disabled:opacity-50">
+                                        {updating ? 'Saving...' : 'Save Changes'}
+                                    </button>
+                                    <button type="button" onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50">Cancel</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
             </div>
         )
     }
@@ -774,14 +949,16 @@ export default function EmployerDashboard() {
                     }>
                         <form onSubmit={handleOrgSubmit} className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">KRA PIN *</label>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">
+                                    KRA PIN
+                                    <span className="text-slate-400 font-normal ml-1">(Recommended for tax & invoicing)</span>
+                                </label>
                                 <input
                                     type="text"
                                     value={orgForm.kra_pin}
                                     onChange={(e) => setOrgForm({ ...orgForm, kra_pin: e.target.value })}
                                     placeholder="e.g., A123456789Z"
                                     className="w-full px-3 py-2 rounded-lg border border-slate-300"
-                                    required
                                 />
                             </div>
                             <div>
@@ -1142,11 +1319,13 @@ export default function EmployerDashboard() {
         const [showAddRole, setShowAddRole] = useState(false)
         const [newRole, setNewRole] = useState({ name: '', description: '', permissions: [] })
 
-        // Count admin seats used (users with elevated permissions)
+        // Count admin roles used (users with elevated permissions) - exclude SuperAdmin
         const adminSeatsUsed = org.staff.filter(s => {
-            // Check if user has any elevated permissions via their role
-            return s.job_title && ['HR Manager', 'Shift Manager', 'Payroll Officer', 'Owner'].includes(s.job_title)
-        }).length + 1 // +1 for owner
+            // Skip SuperAdmin (platform owner, not a clinic user)
+            if (s.role === 'superadmin' || s.email?.includes('@hure.app')) return false
+            // Check if user has any elevated permissions via their permission_role
+            return s.permission_role && ['HR Manager', 'Shift Manager', 'Payroll Officer', 'Owner'].includes(s.permission_role)
+        }).length + 1 // +1 for clinic owner
 
         const canAddAdmin = adminSeatsUsed < limits.adminSeats
 
@@ -1168,7 +1347,7 @@ export default function EmployerDashboard() {
                     setOrg(prev => ({
                         ...prev,
                         staff: prev.staff.map(s =>
-                            s.id === staffId ? { ...s, job_title: newRole } : s
+                            s.id === staffId ? { ...s, permission_role: newRole } : s
                         )
                     }))
                 } else {
@@ -1215,11 +1394,11 @@ export default function EmployerDashboard() {
                     </button>
                 </div>
 
-                {/* Admin Seats Usage */}
+                {/* Admin Roles Usage */}
                 <Card>
                     <div className="flex items-center justify-between">
                         <div>
-                            <div className="font-medium">Admin Seats</div>
+                            <div className="font-medium">Admin Roles</div>
                             <div className="text-sm text-slate-500">
                                 Users with elevated permissions (manage staff, schedule, leave, etc.)
                             </div>
@@ -1325,7 +1504,7 @@ export default function EmployerDashboard() {
 
                 {/* Staff Role Assignments */}
                 <Card title="Staff Role Assignments">
-                    {org.staff.length === 0 ? (
+                    {org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app')).length === 0 ? (
                         <div className="text-center py-8 text-slate-500">
                             No staff members yet. Add staff first to assign roles.
                         </div>
@@ -1339,32 +1518,34 @@ export default function EmployerDashboard() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {org.staff.map(s => {
-                                    const staffRole = roles.find(r => r.name === s.job_title) || roles.find(r => r.name === 'Staff')
-                                    return (
-                                        <tr key={s.id} className="border-t">
-                                            <td className="p-3">
-                                                <div className="font-medium">{s.first_name} {s.last_name}</div>
-                                                <div className="text-xs text-slate-500">{s.email}</div>
-                                            </td>
-                                            <td className="p-3">
-                                                <select
-                                                    className="px-3 py-1.5 rounded border border-slate-300 text-sm"
-                                                    value={s.job_title || 'Staff'}
-                                                    onChange={(e) => handleRoleChange(s.id, e.target.value)}
-                                                    disabled={!canAddAdmin && s.job_title === 'Staff'}
-                                                >
-                                                    {roles.map(r => (
-                                                        <option key={r.name} value={r.name}>{r.name}</option>
-                                                    ))}
-                                                </select>
-                                            </td>
-                                            <td className="p-3 text-sm text-slate-500">
-                                                {staffRole?.permissions.length ? staffRole.permissions.length + ' elevated' : 'Basic access'}
-                                            </td>
-                                        </tr>
-                                    )
-                                })}
+                                {org.staff
+                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                    .map(s => {
+                                        const staffRole = roles.find(r => r.name === (s.permission_role || 'Staff')) || roles.find(r => r.name === 'Staff')
+                                        return (
+                                            <tr key={s.id} className="border-t">
+                                                <td className="p-3">
+                                                    <div className="font-medium">{s.first_name} {s.last_name}</div>
+                                                    <div className="text-xs text-slate-500">{s.email}</div>
+                                                </td>
+                                                <td className="p-3">
+                                                    <select
+                                                        className="px-3 py-1.5 rounded border border-slate-300 text-sm"
+                                                        value={s.permission_role || 'Staff'}
+                                                        onChange={(e) => handleRoleChange(s.id, e.target.value)}
+                                                        disabled={!canAddAdmin && (s.permission_role || 'Staff') === 'Staff'}
+                                                    >
+                                                        {roles.map(r => (
+                                                            <option key={r.name} value={r.name}>{r.name}</option>
+                                                        ))}
+                                                    </select>
+                                                </td>
+                                                <td className="p-3 text-sm text-slate-500">
+                                                    {staffRole?.permissions.length ? staffRole.permissions.length + ' elevated' : 'Basic access'}
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
                             </tbody>
                         </table>
                     )}
@@ -1412,9 +1593,9 @@ export default function EmployerDashboard() {
             fetchPayrollStats()
         }, [dateRange.start, dateRange.end])
 
-        // Filter staff by pay type
-        const salariedStaff = org.staff.filter(s => !s.pay_type || s.pay_type === 'monthly')
-        const dailyStaff = org.staff.filter(s => s.pay_type === 'daily' || s.pay_type === 'hourly')
+        // Filter staff by employment type
+        const salariedStaff = org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && (!s.employment_type || s.employment_type === 'full-time' || s.employment_type === 'part-time'))
+        const casualStaff = org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && (s.employment_type === 'casual' || s.employment_type === 'contract'))
 
         // Helper to get stats for a user
         const getStats = (userId) => payrollStats[userId] || { full_days: 0, half_days: 0, absent_days: 0, total_hours: 0 }
@@ -1429,7 +1610,7 @@ export default function EmployerDashboard() {
 
         // Export payroll to CSV
         const exportPayrollCSV = () => {
-            const allStaff = [...salariedStaff, ...dailyStaff]
+            const allStaff = [...salariedStaff, ...casualStaff]
 
             // CSV Headers
             const headers = ['Staff Name', 'Role', 'Pay Type', 'Full Days', 'Half Days', 'Rate (KSh)', 'Gross (KSh)']
@@ -1541,7 +1722,7 @@ export default function EmployerDashboard() {
                         onClick={() => setActiveTab('daily')}
                         className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'daily' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
                     >
-                        Daily / Casual ({dailyStaff.length})
+                        Daily / Casual ({casualStaff.length})
                     </button>
                 </div>
 
@@ -1549,7 +1730,7 @@ export default function EmployerDashboard() {
                 {activeTab === 'salaried' && (
                     <Card title="Monthly Salaried Staff">
                         <p className="text-sm text-slate-500 mb-4">
-                            Attendance is for reporting purposes. Salary is not auto-deducted for absences.
+                            Gross Pay = (Monthly Salary ÷ Total Days in Period) × Days Worked
                         </p>
                         {salariedStaff.length === 0 ? (
                             <div className="text-center py-8 text-slate-500">No salaried staff found.</div>
@@ -1559,9 +1740,9 @@ export default function EmployerDashboard() {
                                     <tr>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Days Present</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Days Worked</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Absent</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Late</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Total Days</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Monthly Salary</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
                                     </tr>
@@ -1569,16 +1750,25 @@ export default function EmployerDashboard() {
                                 <tbody>
                                     {salariedStaff.map(s => {
                                         const stats = getStats(s.id)
-                                        const daysPresent = stats.full_days + stats.half_days
+                                        // Days worked = full days + (half days × 0.5)
+                                        const daysWorked = stats.full_days + (stats.half_days * 0.5)
+                                        // Calculate total days in selected period
+                                        const totalDaysInPeriod = dateRange.start && dateRange.end
+                                            ? Math.ceil((new Date(dateRange.end) - new Date(dateRange.start)) / (1000 * 60 * 60 * 24)) + 1
+                                            : 30  // Default to 30 if no date range selected
+                                        // Gross = (Monthly Salary ÷ Total Days) × Days Worked
+                                        const grossPay = totalDaysInPeriod > 0
+                                            ? ((s.pay_rate || 0) / totalDaysInPeriod) * daysWorked
+                                            : 0
                                         return (
                                             <tr key={s.id} className="border-t">
                                                 <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
                                                 <td className="p-3">{s.job_title || 'Staff'}</td>
-                                                <td className="p-3">{loadingStats ? '...' : daysPresent}</td>
+                                                <td className="p-3">{loadingStats ? '...' : daysWorked.toFixed(1)}</td>
                                                 <td className="p-3">{loadingStats ? '...' : stats.absent_days}</td>
-                                                <td className="p-3">{loadingStats ? '...' : '-'}</td>
+                                                <td className="p-3">{totalDaysInPeriod}</td>
                                                 <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
-                                                <td className="p-3 font-medium">KSh {(s.pay_rate || 0).toLocaleString()}</td>
+                                                <td className="p-3 font-medium">KSh {loadingStats ? '...' : Math.round(grossPay).toLocaleString()}</td>
                                             </tr>
                                         )
                                     })}
@@ -1594,7 +1784,7 @@ export default function EmployerDashboard() {
                         <p className="text-sm text-slate-500 mb-4">
                             Pay calculated as: Full day = 1 unit × daily rate, Half day = 0.5 unit × daily rate
                         </p>
-                        {dailyStaff.length === 0 ? (
+                        {casualStaff.length === 0 ? (
                             <div className="text-center py-8 text-slate-500">
                                 No daily/casual staff found. Staff pay types are set in Staff module.
                             </div>
@@ -1605,12 +1795,12 @@ export default function EmployerDashboard() {
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Full Days</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Half Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Hourly Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {dailyStaff.map(s => {
+                                    {casualStaff.map(s => {
                                         const stats = getStats(s.id)
                                         const gross = calculateGross(s)
                                         return (
@@ -1642,7 +1832,7 @@ export default function EmployerDashboard() {
         const [showUpgradeModal, setShowUpgradeModal] = useState(false)
         const [upgrading, setUpgrading] = useState(false)
 
-        // Calculate admin seats used (staff with admin roles + owner)
+        // Calculate admin roles used (staff with admin roles + owner)
         const adminSeatsUsed = org.staff.filter(s =>
             s.job_title && ['Owner', 'HR Manager', 'Shift Manager', 'Payroll Officer'].includes(s.job_title)
         ).length + 1 // +1 for owner
@@ -1675,9 +1865,9 @@ export default function EmployerDashboard() {
         }
 
         const plans = [
-            { key: 'essential', name: 'Essential', price: 'KES 2,500/mo', locations: 1, staff: 10, adminSeats: 2 },
-            { key: 'professional', name: 'Professional', price: 'KES 5,000/mo', locations: 2, staff: 30, adminSeats: 5 },
-            { key: 'enterprise', name: 'Enterprise', price: 'KES 10,000/mo', locations: 5, staff: 75, adminSeats: 10 }
+            { key: 'essential', name: 'Essential', price: 'KES 8,000/mo', locations: 1, staff: 10, adminSeats: 2 },
+            { key: 'professional', name: 'Professional', price: 'KES 15,000/mo', locations: 2, staff: 30, adminSeats: 5 },
+            { key: 'enterprise', name: 'Enterprise', price: 'KES 25,000/mo', locations: 5, staff: 75, adminSeats: 10 }
         ]
 
         return (
@@ -1705,7 +1895,7 @@ export default function EmployerDashboard() {
                                 </span>
                             </div>
                             <div className="flex justify-between">
-                                <span>Admin Seats</span>
+                                <span>Admin Roles</span>
                                 <span className={`font-medium ${adminSeatsUsed >= limits.adminSeats ? 'text-red-600' : ''}`}>
                                     {adminSeatsUsed} / {limits.adminSeats}
                                 </span>
@@ -1722,7 +1912,7 @@ export default function EmployerDashboard() {
                     <div className="text-center py-8">
                         <div className="text-4xl mb-4">💳</div>
                         <div className="font-medium mb-2">Need to upgrade?</div>
-                        <p className="text-slate-500 text-sm mb-4">Upgrade your plan to get more locations, staff slots, and admin seats.</p>
+                        <p className="text-slate-500 text-sm mb-4">Upgrade your plan to get more locations, staff slots, and admin roles.</p>
                         <button
                             onClick={() => setShowUpgradeModal(true)}
                             className="bg-primary-600 hover:bg-primary-700 text-white px-6 py-2 rounded-lg"
@@ -1756,7 +1946,7 @@ export default function EmployerDashboard() {
                                         <ul className="text-sm text-slate-600 mt-4 space-y-1">
                                             <li>✓ {plan.locations} Location{plan.locations > 1 ? 's' : ''}</li>
                                             <li>✓ {plan.staff} Staff Members</li>
-                                            <li>✓ {plan.adminSeats} Admin Seats</li>
+                                            <li>✓ {plan.adminSeats} Admin Roles</li>
                                         </ul>
                                         <button
                                             onClick={() => handleUpgrade(plan.key)}
@@ -1786,6 +1976,8 @@ export default function EmployerDashboard() {
         const [schedules, setSchedules] = useState([])
         const [scheduleLoading, setScheduleLoading] = useState(true)
         const [showAddShift, setShowAddShift] = useState(false)
+        const [showManageCoverage, setShowManageCoverage] = useState(false)
+        const [selectedShift, setSelectedShift] = useState(null)
         const [newShift, setNewShift] = useState({
             locationId: '',
             date: '',
@@ -1838,6 +2030,81 @@ export default function EmployerDashboard() {
             }
         }
 
+        const handleManageCoverage = (shift) => {
+            setSelectedShift(shift)
+            setShowManageCoverage(true)
+        }
+
+        const handleDeleteShift = async (shiftId) => {
+            if (!confirm('Are you sure you want to delete this shift? This cannot be undone.')) {
+                return
+            }
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${shiftId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    fetchSchedules()
+                } else {
+                    alert('Failed to delete shift')
+                }
+            } catch (err) {
+                console.error('Delete shift error:', err)
+            }
+        }
+
+        const handleAssignStaff = async (staffId) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/assign`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({ userId: staffId })
+                })
+                if (res.ok) {
+                    const updatedRes = await fetch(`/api/clinics/${clinicId}/schedule`, {
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                    })
+                    if (updatedRes.ok) {
+                        const data = await updatedRes.json()
+                        setSchedules(data.data || [])
+                        const updated = data.data.find(s => s.id === selectedShift.id)
+                        setSelectedShift(updated)
+                    }
+                }
+            } catch (err) {
+                console.error('Assign staff error:', err)
+            }
+        }
+
+        const handleUnassignStaff = async (assignmentId) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/unassign/${assignmentId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    const updatedRes = await fetch(`/api/clinics/${clinicId}/schedule`, {
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                    })
+                    if (updatedRes.ok) {
+                        const data = await updatedRes.json()
+                        setSchedules(data.data || [])
+                        const updated = data.data.find(s => s.id === selectedShift.id)
+                        setSelectedShift(updated)
+                    }
+                }
+            } catch (err) {
+                console.error('Unassign staff error:', err)
+            }
+        }
+
         const formatDate = (dateStr) => {
             const date = new Date(dateStr)
             return date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
@@ -1882,9 +2149,32 @@ export default function EmployerDashboard() {
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Date *</label>
                                     <input
-                                        type="date"
+                                        type="text"
                                         value={newShift.date}
-                                        onChange={(e) => setNewShift({ ...newShift, date: e.target.value })}
+                                        onChange={(e) => {
+                                            let value = e.target.value.replace(/[^\d/]/g, '');
+                                            // Auto-add slashes
+                                            if (value.length === 2 || value.length === 5) {
+                                                if (e.nativeEvent.inputType !== 'deleteContentBackward') {
+                                                    value += '/';
+                                                }
+                                            }
+                                            // Limit to 10 characters (dd/mm/yyyy)
+                                            if (value.length <= 10) {
+                                                setNewShift({ ...newShift, date: value });
+                                            }
+                                        }}
+                                        onBlur={(e) => {
+                                            // Convert dd/mm/yyyy to yyyy-mm-dd for backend
+                                            const parts = e.target.value.split('/');
+                                            if (parts.length === 3) {
+                                                const [day, month, year] = parts;
+                                                const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+                                                setNewShift({ ...newShift, date: isoDate });
+                                            }
+                                        }}
+                                        placeholder="dd/mm/yyyy"
+                                        pattern="\d{2}/\d{2}/\d{4}"
                                         className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                         required
                                     />
@@ -1966,15 +2256,86 @@ export default function EmployerDashboard() {
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="text-right">
-                                        <div className="text-sm text-slate-600">{shift.role_required || 'Any role'}</div>
-                                        <div className="text-xs text-slate-400">{shift.schedule_assignments?.length || 0} / {shift.headcount_required} assigned</div>
+                                    <div className="flex items-center gap-4">
+                                        <div className="text-right">
+                                            <div className="text-sm text-slate-600">{shift.role_required || 'Any role'}</div>
+                                            <div className="text-xs text-slate-400">{shift.schedule_assignments?.length || 0} / {shift.headcount_required} assigned</div>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button
+                                                onClick={() => handleManageCoverage(shift)}
+                                                className="px-3 py-1.5 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg"
+                                            >
+                                                Manage coverage
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteShift(shift.id)}
+                                                className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 border border-red-300 rounded-lg"
+                                            >
+                                                Delete
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             ))}
                         </div>
                     )}
                 </Card>
+
+                {/* Manage Coverage Modal */}
+                {showManageCoverage && selectedShift && (
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[80vh] overflow-hidden">
+                            <div className="p-4 border-b flex items-center justify-between">
+                                <h2 className="text-lg font-bold">Manage coverage</h2>
+                                <button
+                                    onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }}
+                                    className="text-slate-400 hover:text-slate-600 text-2xl"
+                                >×</button>
+                            </div>
+                            <div className="p-4 bg-slate-50 border-b">
+                                <div className="font-medium">{formatDate(selectedShift.date)} · {formatTime(selectedShift.start_time)} - {formatTime(selectedShift.end_time)}</div>
+                                <div className="text-sm text-slate-500">Location: {selectedShift.clinic_locations?.name} · Role: {selectedShift.role_required || 'Any'}</div>
+                                <div className="text-sm text-slate-500">Required: {selectedShift.headcount_required} · Assigned: {selectedShift.schedule_assignments?.length || 0}</div>
+                            </div>
+                            <div className="p-4 overflow-y-auto max-h-[50vh]">
+                                {selectedShift.schedule_assignments?.length > 0 && (
+                                    <div className="mb-4">
+                                        <h3 className="text-sm font-medium text-slate-700 mb-2">Currently Assigned</h3>
+                                        <div className="space-y-2">
+                                            {selectedShift.schedule_assignments.map(a => (
+                                                <div key={a.id} className="flex items-center justify-between p-2 bg-green-50 rounded-lg border border-green-200">
+                                                    <span className="font-medium text-green-800">{a.users?.first_name} {a.users?.last_name}</span>
+                                                    <button onClick={() => handleUnassignStaff(a.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <div>
+                                    <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
+                                    <div className="space-y-2">
+                                        {org.staff
+                                            .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                            .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
+                                            .map(staff => (
+                                                <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
+                                                    <div>
+                                                        <span className="font-medium">{staff.first_name} {staff.last_name}</span>
+                                                        <span className="text-sm text-slate-500 ml-2">{staff.job_title}</span>
+                                                    </div>
+                                                    <button onClick={() => handleAssignStaff(staff.id)} className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg">Assign</button>
+                                                </div>
+                                            ))}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="p-4 border-t">
+                                <button onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }} className="w-full px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg">Close</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         )
     }
@@ -1987,6 +2348,8 @@ export default function EmployerDashboard() {
         const [attendance, setAttendance] = useState([])
         const [attendanceLoading, setAttendanceLoading] = useState(true)
         const [dateFilter, setDateFilter] = useState(new Date().toISOString().split('T')[0])
+        const [searchName, setSearchName] = useState('')
+        const [dateRange, setDateRange] = useState('custom')
 
         useEffect(() => {
             fetchAttendance()
@@ -2024,45 +2387,106 @@ export default function EmployerDashboard() {
             }
         }
 
+        const setQuickDateRange = (range) => {
+            const now = new Date()
+            let startDate
+
+            if (range === 'today') {
+                startDate = now.toISOString().split('T')[0]
+            } else if (range === 'week') {
+                const dayOfWeek = now.getDay()
+                const diff = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+                startDate = new Date(now.setDate(now.getDate() - diff)).toISOString().split('T')[0]
+            } else if (range === 'month') {
+                startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
+            }
+            setDateFilter(startDate)
+            setDateRange(range)
+        }
+
+        const filteredAttendance = attendance.filter(a => {
+            const staffName = `${a.user?.first_name || ''} ${a.user?.last_name || ''}`.toLowerCase()
+            return staffName.includes(searchName.toLowerCase())
+        })
+
         return (
             <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-xl font-bold">Attendance Tracking</h1>
-                        <p className="text-slate-500 text-sm">Monitor staff attendance and work hours</p>
+                <div>
+                    <div className="flex items-center justify-between mb-4">
+                        <div>
+                            <h1 className="text-xl font-bold">Attendance Tracking</h1>
+                            <p className="text-slate-500 text-sm">Monitor staff attendance and work hours</p>
+                        </div>
                     </div>
-                    <input
-                        type="date"
-                        value={dateFilter}
-                        onChange={(e) => setDateFilter(e.target.value)}
-                        className="px-3 py-2 rounded-lg border border-slate-300"
-                    />
+
+                    <div className="flex flex-col md:flex-row gap-4">
+                        {/* Search Input */}
+                        <div className="flex-1">
+                            <input
+                                type="text"
+                                placeholder="Search employee by name..."
+                                value={searchName}
+                                onChange={(e) => setSearchName(e.target.value)}
+                                className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                            />
+                        </div>
+
+                        {/* Date Range Quick Filters */}
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setQuickDateRange('today')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium ${dateRange === 'today' ? 'bg-primary-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                            >
+                                Today
+                            </button>
+                            <button
+                                onClick={() => setQuickDateRange('week')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium ${dateRange === 'week' ? 'bg-primary-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                            >
+                                This Week
+                            </button>
+                            <button
+                                onClick={() => setQuickDateRange('month')}
+                                className={`px-4 py-2 rounded-lg text-sm font-medium ${dateRange === 'month' ? 'bg-primary-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                            >
+                                This Month
+                            </button>
+                        </div>
+
+                        {/* Custom Date Picker */}
+                        <input
+                            type="date"
+                            value={dateFilter}
+                            onChange={(e) => { setDateFilter(e.target.value); setDateRange('custom') }}
+                            className="px-3 py-2 rounded-lg border border-slate-300"
+                        />
+                    </div>
                 </div>
 
                 {/* Stats */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <Card>
                         <div className="text-center">
-                            <div className="text-3xl font-bold text-green-600">{attendance.filter(a => a.status === 'present_full').length}</div>
+                            <div className="text-3xl font-bold text-green-600">{filteredAttendance.filter(a => a.status === 'present_full').length}</div>
                             <div className="text-sm text-slate-500">Present</div>
                         </div>
                     </Card>
                     <Card>
                         <div className="text-center">
-                            <div className="text-3xl font-bold text-amber-600">{attendance.filter(a => a.status === 'present_partial').length}</div>
+                            <div className="text-3xl font-bold text-amber-600">{filteredAttendance.filter(a => a.status === 'present_partial').length}</div>
                             <div className="text-sm text-slate-500">Partial</div>
                         </div>
                     </Card>
                     <Card>
                         <div className="text-center">
-                            <div className="text-3xl font-bold text-red-600">{attendance.filter(a => a.status === 'absent').length}</div>
+                            <div className="text-3xl font-bold text-red-600">{filteredAttendance.filter(a => a.status === 'absent').length}</div>
                             <div className="text-sm text-slate-500">Absent</div>
                         </div>
                     </Card>
                     <Card>
                         <div className="text-center">
                             <div className="text-3xl font-bold text-primary-600">
-                                {attendance.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0).toFixed(1)}
+                                {filteredAttendance.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0).toFixed(1)}
                             </div>
                             <div className="text-sm text-slate-500">Total Hours</div>
                         </div>
@@ -2073,7 +2497,7 @@ export default function EmployerDashboard() {
                 <Card title={`Attendance for ${new Date(dateFilter).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}>
                     {attendanceLoading ? (
                         <div className="text-center py-8">Loading...</div>
-                    ) : attendance.length === 0 ? (
+                    ) : filteredAttendance.length === 0 ? (
                         <div className="text-center py-12 text-slate-500">
                             <div className="text-4xl mb-4">⏰</div>
                             <div>No attendance records for this date.</div>
@@ -2090,7 +2514,7 @@ export default function EmployerDashboard() {
                                 </tr>
                             </thead>
                             <tbody>
-                                {attendance.map(record => (
+                                {filteredAttendance.map(record => (
                                     <tr key={record.id} className="border-t">
                                         <td className="p-3">
                                             <div className="font-medium">{record.user?.first_name} {record.user?.last_name}</div>

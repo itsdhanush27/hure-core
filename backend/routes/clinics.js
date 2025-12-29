@@ -172,7 +172,7 @@ router.get('/:clinicId/schedule', authMiddleware, async (req, res) => {
 
         const { data, error } = await supabaseAdmin
             .from('schedule_blocks')
-            .select('*, clinic_locations(name), schedule_assignments(id, user_id)')
+            .select('*, clinic_locations(name), schedule_assignments(id, user_id, users(first_name, last_name))')
             .eq('clinic_id', clinicId)
             .order('date', { ascending: true })
 
@@ -495,7 +495,7 @@ router.get('/:clinicId/staff', authMiddleware, async (req, res) => {
 router.post('/:clinicId/staff', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
-        const { first_name, last_name, email, phone, job_title, location_id, hourly_rate } = req.body
+        const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate } = req.body
 
         if (!first_name || !last_name || !email || !job_title) {
             return res.status(400).json({ error: 'First name, last name, email, and job title are required' })
@@ -518,6 +518,9 @@ router.post('/:clinicId/staff', authMiddleware, async (req, res) => {
         const crypto = await import('crypto')
         const inviteToken = crypto.randomBytes(32).toString('hex')
 
+        // Determine pay_type based on employment_type
+        const payType = employment_type === 'casual' ? 'daily' : 'salary'
+
         // Create staff member WITHOUT password (they'll set it via invite)
         const { data, error } = await supabaseAdmin
             .from('users')
@@ -529,8 +532,8 @@ router.post('/:clinicId/staff', authMiddleware, async (req, res) => {
                 phone,
                 job_title,
                 location_id: location_id || null,
-                pay_rate: hourly_rate ? parseFloat(hourly_rate) : null,
-                pay_type: 'hourly',
+                pay_rate: pay_rate ? parseFloat(pay_rate) : null,
+                pay_type: payType,
                 role: 'staff',
                 account_type: 'staff',
                 password_hash: null,  // No password yet - will be set via invite
@@ -604,7 +607,7 @@ router.patch('/:clinicId/staff/:staffId/role', authMiddleware, async (req, res) 
         const { data, error } = await supabaseAdmin
             .from('users')
             .update({
-                job_title: role,
+                permission_role: role,  // Use separate field for access level
                 updated_at: new Date().toISOString()
             })
             .eq('id', staffId)
@@ -814,6 +817,71 @@ router.post('/:clinicId/schedules', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('Schedule create error:', err)
         res.status(500).json({ error: 'Failed to create schedule' })
+    }
+})
+
+// ============================================
+// STAFF MANAGEMENT ENDPOINTS
+// ============================================
+
+// PATCH /api/clinics/:clinicId/staff/:staffId - Update staff member
+router.patch('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, staffId } = req.params
+        const updates = req.body
+
+        // Allowed fields to update (must match columns in users table)
+        const allowedFields = ['first_name', 'last_name', 'email', 'phone', 'job_title', 'location_id', 'employment_type', 'pay_rate', 'is_active']
+        const filteredUpdates = {}
+        for (const field of allowedFields) {
+            if (updates[field] !== undefined) {
+                filteredUpdates[field] = updates[field]
+            }
+        }
+        filteredUpdates.updated_at = new Date().toISOString()
+
+        const { data, error } = await supabaseAdmin
+            .from('users')
+            .update(filteredUpdates)
+            .eq('id', staffId)
+            .eq('clinic_id', clinicId)
+            .select('*, clinic_locations(name)')
+            .single()
+
+        if (error) {
+            console.error('Update staff error:', error)
+            return res.status(500).json({ error: 'Failed to update staff' })
+        }
+
+        console.log('✅ Staff updated:', staffId)
+        res.json({ success: true, staff: data })
+    } catch (err) {
+        console.error('Update staff error:', err)
+        res.status(500).json({ error: 'Failed to update staff' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/staff/:staffId - Delete staff member
+router.delete('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, staffId } = req.params
+
+        const { error } = await supabaseAdmin
+            .from('users')
+            .delete()
+            .eq('id', staffId)
+            .eq('clinic_id', clinicId)
+
+        if (error) {
+            console.error('Delete staff error:', error)
+            return res.status(500).json({ error: 'Failed to delete staff' })
+        }
+
+        console.log('✅ Staff deleted:', staffId)
+        res.json({ success: true, message: 'Staff deleted successfully' })
+    } catch (err) {
+        console.error('Delete staff error:', err)
+        res.status(500).json({ error: 'Failed to delete staff' })
     }
 })
 
