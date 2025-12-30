@@ -178,7 +178,7 @@ router.get('/:clinicId/schedule', authMiddleware, async (req, res) => {
 
         const { data, error } = await supabaseAdmin
             .from('schedule_blocks')
-            .select('*, clinic_locations(name), schedule_assignments(id, user_id, users(first_name, last_name))')
+            .select('*, clinic_locations(name), schedule_assignments(*, users(first_name, last_name))')
             .eq('clinic_id', clinicId)
             .order('date', { ascending: true })
 
