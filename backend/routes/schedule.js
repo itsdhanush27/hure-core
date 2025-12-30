@@ -1,6 +1,6 @@
 import express from 'express'
 import { supabaseAdmin } from '../lib/supabase.js'
-import { authMiddleware } from '../lib/auth.js'
+import { authMiddleware, requirePermission } from '../lib/auth.js'
 
 const router = express.Router({ mergeParams: true })
 
@@ -42,7 +42,7 @@ router.get('/', authMiddleware, async (req, res) => {
 })
 
 // POST /api/clinics/:clinicId/schedule - Create schedule block
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
     try {
         const { clinicId } = req.params
         const { locationId, date, startTime, endTime, roleRequired, headcountRequired, notes } = req.body
@@ -79,7 +79,7 @@ router.post('/', authMiddleware, async (req, res) => {
 })
 
 // POST /api/clinics/:clinicId/schedule/:blockId/assign - Assign staff to shift
-router.post('/:blockId/assign', authMiddleware, async (req, res) => {
+router.post('/:blockId/assign', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
     try {
         const { blockId } = req.params
         const { userId, isExternal, externalName, externalPhone, externalNotes } = req.body
@@ -110,8 +110,8 @@ router.post('/:blockId/assign', authMiddleware, async (req, res) => {
     }
 })
 
-// DELETE /api/clinics/:clinicId/schedule/:blockId - Delete a shift
-router.delete('/:blockId', authMiddleware, async (req, res) => {
+// DELETE /api/clinics/:clinicId/schedule/:blockId - Delete schedule block
+router.delete('/:blockId', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
     try {
         const { clinicId, blockId } = req.params
 
@@ -141,8 +141,8 @@ router.delete('/:blockId', authMiddleware, async (req, res) => {
     }
 })
 
-// DELETE /api/clinics/:clinicId/schedule/:blockId/unassign/:assignmentId - Unassign staff from shift
-router.delete('/:blockId/unassign/:assignmentId', authMiddleware, async (req, res) => {
+// DELETE /api/clinics/:clinicId/schedule/assignments/:assignmentId - Unassign staff
+router.delete('/assignments/:assignmentId', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
     try {
         const { assignmentId } = req.params
 
@@ -161,6 +161,143 @@ router.delete('/:blockId/unassign/:assignmentId', authMiddleware, async (req, re
     } catch (err) {
         console.error('Unassign shift error:', err)
         res.status(500).json({ error: 'Failed to unassign staff' })
+    }
+})
+
+// ============================================
+// EXTERNAL LOCUM ENDPOINTS
+// ============================================
+
+// GET /api/clinics/:clinicId/schedule/:blockId/locums - Get external locums for a shift
+router.get('/:blockId/locums', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, blockId } = req.params
+
+        const { data, error } = await supabaseAdmin
+            .from('external_locums')
+            .select('*, supervisor:users!external_locums_supervisor_id_fkey(first_name, last_name)')
+            .eq('clinic_id', clinicId)
+            .eq('schedule_block_id', blockId)
+            .order('created_at', { ascending: false })
+
+        if (error) {
+            console.error('Get locums error:', error)
+            return res.status(500).json({ error: 'Failed to fetch locums' })
+        }
+
+        res.json({ data: data || [] })
+    } catch (err) {
+        console.error('Get locums error:', err)
+        res.status(500).json({ error: 'Failed to fetch locums' })
+    }
+})
+
+// POST /api/clinics/:clinicId/schedule/:blockId/locums - Add external locum to shift
+router.post('/:blockId/locums', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
+    try {
+        const { clinicId, blockId } = req.params
+        const { name, phone, role, dailyRate, supervisorId, notes } = req.body
+
+        if (!name) {
+            return res.status(400).json({ error: 'Locum name is required' })
+        }
+
+        // Get shift details for default role
+        const { data: shift } = await supabaseAdmin
+            .from('schedule_blocks')
+            .select('role_required')
+            .eq('id', blockId)
+            .single()
+
+        const { data, error } = await supabaseAdmin
+            .from('external_locums')
+            .insert({
+                clinic_id: clinicId,
+                schedule_block_id: blockId,
+                name,
+                phone: phone || null,
+                role: role || shift?.role_required || 'General',
+                daily_rate: dailyRate || 0,
+                supervisor_id: supervisorId || null,
+                notes: notes || null,
+                created_by: req.user.userId
+            })
+            .select('*, supervisor:users!external_locums_supervisor_id_fkey(first_name, last_name)')
+            .single()
+
+        if (error) {
+            console.error('Add locum error:', error)
+            return res.status(500).json({ error: 'Failed to add locum' })
+        }
+
+        console.log('✅ External locum added:', name, 'to shift', blockId)
+        res.json({ success: true, data })
+    } catch (err) {
+        console.error('Add locum error:', err)
+        res.status(500).json({ error: 'Failed to add locum' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/schedule/:blockId/locums/:locumId - Remove external locum
+router.delete('/:blockId/locums/:locumId', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
+    try {
+        const { clinicId, locumId } = req.params
+
+        // First, delete any attendance records for this locum
+        await supabaseAdmin
+            .from('attendance')
+            .delete()
+            .eq('external_locum_id', locumId)
+            .eq('clinic_id', clinicId)
+
+        // Delete any payroll records for this locum
+        await supabaseAdmin
+            .from('payroll_records')
+            .delete()
+            .eq('external_locum_id', locumId)
+            .eq('clinic_id', clinicId)
+
+        // Then delete the locum record
+        const { error } = await supabaseAdmin
+            .from('external_locums')
+            .delete()
+            .eq('id', locumId)
+            .eq('clinic_id', clinicId)
+
+        if (error) {
+            console.error('Delete locum error:', error)
+            return res.status(500).json({ error: 'Failed to remove locum' })
+        }
+
+        console.log('✅ External locum removed:', locumId)
+        res.json({ success: true, message: 'Locum removed successfully' })
+    } catch (err) {
+        console.error('Delete locum error:', err)
+        res.status(500).json({ error: 'Failed to remove locum' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/schedule/:blockId/locums - Clear all locums from shift
+router.delete('/:blockId/locums', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
+    try {
+        const { clinicId, blockId } = req.params
+
+        const { error } = await supabaseAdmin
+            .from('external_locums')
+            .delete()
+            .eq('clinic_id', clinicId)
+            .eq('schedule_block_id', blockId)
+
+        if (error) {
+            console.error('Clear locums error:', error)
+            return res.status(500).json({ error: 'Failed to clear locums' })
+        }
+
+        console.log('✅ All locums cleared from shift:', blockId)
+        res.json({ success: true, message: 'All locums cleared' })
+    } catch (err) {
+        console.error('Clear locums error:', err)
+        res.status(500).json({ error: 'Failed to clear locums' })
     }
 })
 

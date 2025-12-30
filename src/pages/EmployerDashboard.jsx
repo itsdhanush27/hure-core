@@ -38,6 +38,12 @@ export default function EmployerDashboard() {
         staffCount: 0
     })
 
+    // Dashboard stats
+    const [dashboardStats, setDashboardStats] = useState({
+        todayShifts: 0,
+        presentToday: 0
+    })
+
     // Current location filter
     const [selectedLocation, setSelectedLocation] = useState('all')
 
@@ -53,7 +59,43 @@ export default function EmployerDashboard() {
         }
 
         fetchDashboardData(clinicId)
+        fetchDashboardStats(clinicId)
     }, [])
+
+    const fetchDashboardStats = async (clinicId) => {
+        const token = localStorage.getItem('hure_token')
+        const today = new Date().toISOString().split('T')[0]
+
+        try {
+            // Fetch today's schedules
+            const schedRes = await fetch(`/api/clinics/${clinicId}/schedule?date=${today}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            })
+            if (schedRes.ok) {
+                const data = await schedRes.json()
+                const todayShifts = (data.data || []).length
+
+                // Fetch today's attendance
+                const attRes = await fetch(`/api/clinics/${clinicId}/attendance?startDate=${today}&endDate=${today}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                let presentCount = 0
+                if (attRes.ok) {
+                    const attData = await attRes.json()
+                    presentCount = (attData.data || []).filter(a =>
+                        a.status === 'present_full' || a.status === 'present_partial'
+                    ).length
+                }
+
+                setDashboardStats({
+                    todayShifts,
+                    presentToday: presentCount
+                })
+            }
+        } catch (err) {
+            console.error('Fetch dashboard stats error:', err)
+        }
+    }
 
     const fetchDashboardData = async (clinicId) => {
         setLoading(true)
@@ -83,6 +125,20 @@ export default function EmployerDashboard() {
                         locations: data.locations,
                         locationCount: data.locations.length
                     }))
+
+                    // Set default location based on count
+                    const savedLocation = localStorage.getItem('hure_selected_location')
+                    if (data.locations.length === 1) {
+                        // Only 1 location: auto-select it
+                        setSelectedLocation(data.locations[0].id)
+                        localStorage.setItem('hure_selected_location', data.locations[0].id)
+                    } else if (savedLocation && (savedLocation === 'all' || data.locations.some(l => l.id === savedLocation))) {
+                        // Multiple locations: use saved selection if valid
+                        setSelectedLocation(savedLocation)
+                    } else {
+                        // Default to 'all' for multiple locations
+                        setSelectedLocation('all')
+                    }
                 }
             }
 
@@ -96,7 +152,11 @@ export default function EmployerDashboard() {
                 setOrg(prev => ({
                     ...prev,
                     staff: staffData.data || [],
-                    staffCount: staffData.data?.length || 0
+                    staffCount: (staffData.data || []).filter(s =>
+                        s.role !== 'superadmin' &&
+                        !s.email?.includes('@hure.app') &&
+                        s.is_active !== false
+                    ).length
                 }))
             }
         } catch (err) {
@@ -345,14 +405,18 @@ export default function EmployerDashboard() {
             </div>
 
             <div className="flex items-center gap-4">
-                {/* Location selector (only for multi-location plans) */}
-                {limits.locations > 1 && org.locations.length > 0 && (
+                {/* Location selector */}
+                {org.locations.length > 0 && (
                     <select
                         value={selectedLocation}
-                        onChange={(e) => setSelectedLocation(e.target.value)}
+                        onChange={(e) => {
+                            setSelectedLocation(e.target.value)
+                            localStorage.setItem('hure_selected_location', e.target.value)
+                        }}
                         className="bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm"
                     >
-                        <option value="all">All Locations</option>
+                        {/* Only show "All Locations" if 2+ locations */}
+                        {org.locations.length > 1 && <option value="all">All Locations</option>}
                         {org.locations.map(loc => (
                             <option key={loc.id} value={loc.id}>{loc.name}</option>
                         ))}
@@ -395,19 +459,21 @@ export default function EmployerDashboard() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard icon="👥" label="Total Staff" value={org.staffCount} sublabel={`of ${limits.staff} allowed`} />
                 <StatCard icon="📍" label="Locations" value={org.locationCount} sublabel={`of ${limits.locations} allowed`} />
-                <StatCard icon="📅" label="Today's Shifts" value="-" sublabel="No data yet" />
-                <StatCard icon="⏰" label="Present Today" value="-" sublabel="No data yet" />
+                <StatCard icon="📅" label="Today's Shifts" value={dashboardStats.todayShifts} sublabel="Scheduled" />
+                <StatCard icon="⏰" label="Present Today" value={dashboardStats.presentToday} sublabel={`of ${org.staffCount} staff clocked in`} />
             </div>
 
             {/* Compliance Status */}
             <Card title="Compliance Status">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${org.orgVerificationStatus === 'approved' ? 'bg-green-100 text-green-700' :
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${org.orgVerificationStatus === 'approved' ? 'bg-emerald-100 text-emerald-700' :
                             org.orgVerificationStatus === 'under_review' ? 'bg-amber-100 text-amber-700' :
                                 'bg-slate-100 text-slate-600'
                             }`}>
-                            {org.orgVerificationStatus}
+                            {org.orgVerificationStatus === 'approved' ? 'Approved' :
+                                org.orgVerificationStatus === 'under_review' ? 'Under Review' :
+                                    org.orgVerificationStatus === 'pending' ? 'Pending' : org.orgVerificationStatus}
                         </span>
                         <span className="text-sm text-slate-600">Organization Verification</span>
                     </div>
@@ -417,7 +483,7 @@ export default function EmployerDashboard() {
                         </span>
                     </div>
                     <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
-                        <span className="text-sm text-slate-600">Staff Licenses: Coming soon</span>
+                        <span className="text-sm text-slate-600">Staff Licenses: 0 added</span>
                     </div>
                 </div>
             </Card>
@@ -460,7 +526,8 @@ export default function EmployerDashboard() {
         const [editingStaff, setEditingStaff] = useState(null)
         const [newStaff, setNewStaff] = useState({
             first_name: '', last_name: '', email: '', phone: '',
-            job_title: '', location_id: '', employment_type: 'full-time', pay_rate: '', hire_date: ''
+            job_title: '', location_id: '', employment_type: 'full-time', pay_rate: '', hire_date: '',
+            system_role: 'EMPLOYEE'
         })
         const [adding, setAdding] = useState(false)
         const [updating, setUpdating] = useState(false)
@@ -484,7 +551,7 @@ export default function EmployerDashboard() {
                     setOrg(prev => ({
                         ...prev,
                         staff: [...prev.staff, data.staff],
-                        staffCount: prev.staffCount + 1
+                        // staffCount: prev.staffCount + 1 -- Don't increment for inactive staff (pending invite)
                     }))
                     setShowAddForm(false)
                     setNewStaff({ first_name: '', last_name: '', email: '', phone: '', job_title: '', location_id: '', employment_type: 'full-time', pay_rate: '', hire_date: '' })
@@ -500,6 +567,9 @@ export default function EmployerDashboard() {
         }
 
         const handleEditStaff = (staff) => {
+            // Infer system_role if not present
+            const sysRole = staff.system_role || (staff.role === 'Owner' ? 'OWNER' :
+                ['Shift Manager', 'HR Manager', 'Payroll Officer'].includes(staff.role) ? 'ADMIN' : 'EMPLOYEE')
             setEditingStaff({
                 id: staff.id,
                 first_name: staff.first_name || '',
@@ -510,7 +580,9 @@ export default function EmployerDashboard() {
                 location_id: staff.location_id || '',
                 employment_type: staff.employment_type || 'full-time',
                 pay_rate: staff.pay_rate || '',
-                is_active: staff.is_active !== false
+                is_active: staff.is_active !== false,
+                system_role: sysRole,
+                role: staff.role
             })
             setShowEditForm(true)
         }
@@ -561,7 +633,7 @@ export default function EmployerDashboard() {
                     setOrg(prev => ({
                         ...prev,
                         staff: prev.staff.filter(s => s.id !== staffId),
-                        staffCount: prev.staffCount - 1
+                        staffCount: prev.staffCount - (prev.staff.find(s => s.id === staffId)?.is_active !== false ? 1 : 0)
                     }))
                 } else {
                     alert('Failed to delete staff')
@@ -571,12 +643,65 @@ export default function EmployerDashboard() {
             }
         }
 
+        const handleToggleStatus = async (staffId, currentStatus, staffName) => {
+            const newStatus = !currentStatus
+            const action = newStatus ? 'activate' : 'deactivate'
+
+            // Check limit if activating
+            if (newStatus && org.staffCount >= limits.staff) {
+                alert(`Cannot activate staff: Current plan limit of ${limits.staff} active staff reached. Please upgrade or deactivate another staff member first.`)
+                return
+            }
+
+            if (!confirm(`Are you sure you want to ${action} ${staffName}? ${!newStatus ? 'They will not be able to log in.' : 'They will regain access.'}`)) {
+                return
+            }
+
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/staff/${staffId}/status`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({ isActive: newStatus })
+                })
+
+                if (res.ok) {
+                    const data = await res.json()
+                    setOrg(prev => ({
+                        ...prev,
+                        staff: prev.staff.map(s => s.id === staffId ? { ...s, is_active: newStatus } : s)
+                    }))
+                    // Update staff count if needed
+                    const activeCount = org.staff.filter(s => s.id !== staffId && s.is_active !== false).length + (newStatus ? 1 : 0)
+                    setOrg(prev => ({
+                        ...prev,
+                        staffCount: activeCount // This might be redundant if staffCount is derived, but safe to update
+                    }))
+                } else {
+                    if (res.status === 401) {
+                        alert('Your session has expired. Please log in again.')
+                        logout() // Uses the logout hook from context
+                        navigate('/login')
+                        return
+                    }
+                    const err = await res.json()
+                    alert(err.error || `Failed to ${action} staff`)
+                }
+            } catch (err) {
+                console.error('Status update error:', err)
+                alert(`Failed to ${action} staff`)
+            }
+        }
+
         return (
             <div className="space-y-6">
                 <div className="flex items-center justify-between">
                     <div>
                         <h1 className="text-xl font-bold">Staff Management</h1>
-                        <p className="text-slate-500 text-sm">{org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app')).length} of {limits.staff} staff used</p>
+                        <p className="text-slate-500 text-sm">{org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false).length} of {limits.staff} staff used (Active only)</p>
                     </div>
                     <button
                         onClick={() => setShowAddForm(true)}
@@ -650,6 +775,16 @@ export default function EmployerDashboard() {
                                     />
                                 </div>
                                 <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">System Role</label>
+                                    <select
+                                        value={newStaff.system_role || 'EMPLOYEE'}
+                                        onChange={(e) => setNewStaff({ ...newStaff, system_role: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                    >
+                                        <option value="EMPLOYEE">EMPLOYEE</option>
+                                    </select>
+                                </div>
+                                <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
                                     <select
                                         value={newStaff.location_id}
@@ -713,7 +848,8 @@ export default function EmployerDashboard() {
                             </div>
                         </form>
                     </Card>
-                )}
+                )
+                }
 
                 <Card title="Staff Members">
                     {org.staff.length === 0 ? (
@@ -726,7 +862,8 @@ export default function EmployerDashboard() {
                             <thead className="bg-slate-50">
                                 <tr>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Name</th>
-                                    <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
+                                    <th className="text-left p-3 text-sm font-medium text-slate-600">Job Title</th>
+                                    <th className="text-left p-3 text-sm font-medium text-slate-600">System Role</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Email</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Location</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
@@ -736,108 +873,151 @@ export default function EmployerDashboard() {
                             <tbody>
                                 {org.staff
                                     .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
-                                    .map(s => (
-                                        <tr key={s.id} className="border-t hover:bg-slate-50">
-                                            <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                            <td className="p-3">{s.job_title || s.role}</td>
-                                            <td className="p-3 text-sm text-slate-500">{s.email}</td>
-                                            <td className="p-3">{s.location?.name || s.clinic_locations?.name || '-'}</td>
-                                            <td className="p-3">
-                                                <span className={`px-2 py-1 rounded text-xs ${s.is_active !== false ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                                                    {s.is_active !== false ? 'Active' : 'Inactive'}
-                                                </span>
-                                            </td>
-                                            <td className="p-3">
-                                                <div className="flex gap-2">
-                                                    <button
-                                                        onClick={() => handleEditStaff(s)}
-                                                        className="text-primary-600 hover:text-primary-700 text-sm font-medium"
-                                                    >
-                                                        Edit
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleDeleteStaff(s.id, `${s.first_name} ${s.last_name}`)}
-                                                        className="text-red-600 hover:text-red-700 text-sm font-medium"
-                                                    >
-                                                        Delete
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
+                                    .map(s => {
+                                        // Determine system role (from field or infer from role)
+                                        const sysRole = s.system_role || (s.role === 'Owner' ? 'OWNER' :
+                                            ['Shift Manager', 'HR Manager', 'Payroll Officer'].includes(s.role) ? 'ADMIN' : 'EMPLOYEE')
+                                        const roleColors = {
+                                            'OWNER': 'bg-amber-100 text-amber-700 border border-amber-200',
+                                            'ADMIN': 'bg-blue-100 text-blue-700 border border-blue-200',
+                                            'EMPLOYEE': 'bg-slate-100 text-slate-600'
+                                        }
+                                        return (
+                                            <tr key={s.id} className="border-t hover:bg-slate-50">
+                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
+                                                <td className="p-3">{s.job_title || '-'}</td>
+                                                <td className="p-3">
+                                                    <span className={`px-2 py-1 rounded text-xs font-medium ${roleColors[sysRole] || roleColors.EMPLOYEE}`}>
+                                                        {sysRole}
+                                                    </span>
+                                                </td>
+                                                <td className="p-3 text-sm text-slate-500">{s.email}</td>
+                                                <td className="p-3">{s.location?.name || s.clinic_locations?.name || '-'}</td>
+                                                <td className="p-3">
+                                                    <span className={`px-2 py-1 rounded text-xs ${s.status === 'invited' ? 'bg-blue-100 text-blue-700' :
+                                                        s.status === 'inactive' || s.is_active === false ? 'bg-slate-100 text-slate-600' :
+                                                            s.status === 'archived' ? 'bg-red-100 text-red-600' :
+                                                                'bg-green-100 text-green-700'
+                                                        }`}>
+                                                        {s.status === 'invited' ? 'Invited' :
+                                                            s.status === 'inactive' || s.is_active === false ? 'Inactive' :
+                                                                s.status === 'archived' ? 'Archived' : 'Active'}
+                                                    </span>
+                                                </td>
+                                                <td className="p-3">
+                                                    <div className="flex gap-2">
+                                                        <button
+                                                            onClick={() => handleEditStaff(s)}
+                                                            className="text-primary-600 hover:text-primary-700 text-sm font-medium"
+                                                        >
+                                                            Edit
+                                                        </button>
+                                                        {sysRole !== 'OWNER' && (
+                                                            <button
+                                                                onClick={() => handleToggleStatus(s.id, s.is_active !== false, `${s.first_name} ${s.last_name}`)}
+                                                                className={`text-sm font-medium ${s.is_active !== false ? 'text-amber-600 hover:text-amber-700' : 'text-green-600 hover:text-green-700'}`}
+                                                            >
+                                                                {s.is_active !== false ? 'Deactivate' : 'Activate'}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
                             </tbody>
                         </table>
                     )}
                 </Card>
 
                 {/* Edit Staff Modal */}
-                {showEditForm && editingStaff && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-                            <div className="p-4 border-b flex items-center justify-between">
-                                <h2 className="text-lg font-bold">Edit Staff Member</h2>
-                                <button onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="text-slate-400 hover:text-slate-600 text-2xl">×</button>
-                            </div>
-                            <form onSubmit={handleUpdateStaff} className="p-4 space-y-4">
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">First Name *</label>
-                                        <input type="text" value={editingStaff.first_name} onChange={(e) => setEditingStaff({ ...editingStaff, first_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
+                {
+                    showEditForm && editingStaff && (
+                        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+                                <div className="p-4 border-b flex items-center justify-between">
+                                    <h2 className="text-lg font-bold">Edit Staff Member</h2>
+                                    <button onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="text-slate-400 hover:text-slate-600 text-2xl">×</button>
+                                </div>
+                                <form onSubmit={handleUpdateStaff} className="p-4 space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">First Name *</label>
+                                            <input type="text" value={editingStaff.first_name} onChange={(e) => setEditingStaff({ ...editingStaff, first_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">Last Name *</label>
+                                            <input type="text" value={editingStaff.last_name} onChange={(e) => setEditingStaff({ ...editingStaff, last_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
+                                        </div>
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Last Name *</label>
-                                        <input type="text" value={editingStaff.last_name} onChange={(e) => setEditingStaff({ ...editingStaff, last_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+                                        <input type="email" value={editingStaff.email} onChange={(e) => setEditingStaff({ ...editingStaff, email: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
                                     </div>
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-                                    <input type="email" value={editingStaff.email} onChange={(e) => setEditingStaff({ ...editingStaff, email: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
-                                    <input type="tel" value={editingStaff.phone} onChange={(e) => setEditingStaff({ ...editingStaff, phone: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Job Title / Role</label>
-                                    <input type="text" value={editingStaff.job_title} onChange={(e) => setEditingStaff({ ...editingStaff, job_title: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
-                                    <select value={editingStaff.location_id} onChange={(e) => setEditingStaff({ ...editingStaff, location_id: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
-                                        <option value="">No location</option>
-                                        {org.locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
-                                    </select>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Employment Type</label>
-                                        <select value={editingStaff.employment_type} onChange={(e) => setEditingStaff({ ...editingStaff, employment_type: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
-                                            <option value="full-time">Full-time</option>
-                                            <option value="part-time">Part-time</option>
-                                            <option value="casual">Casual</option>
-                                            <option value="contract">Contract</option>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
+                                        <input type="tel" value={editingStaff.phone} onChange={(e) => setEditingStaff({ ...editingStaff, phone: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Job Title</label>
+                                        <input type="text" value={editingStaff.job_title} onChange={(e) => setEditingStaff({ ...editingStaff, job_title: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">System Role</label>
+                                        {editingStaff.system_role === 'OWNER' || editingStaff.role === 'Owner' ? (
+                                            <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 font-medium">OWNER (immutable)</div>
+                                        ) : (
+                                            <select
+                                                value={editingStaff.system_role || 'EMPLOYEE'}
+                                                onChange={(e) => setEditingStaff({ ...editingStaff, system_role: e.target.value })}
+                                                className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                            >
+                                                <option value="EMPLOYEE">EMPLOYEE</option>
+                                                <option value="ADMIN">ADMIN</option>
+                                            </select>
+                                        )}
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            Admin seats: {org.staff.filter(s => s.system_role === 'ADMIN' && s.is_active !== false).length} / {limits.adminSeats} used
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
+                                        <select value={editingStaff.location_id} onChange={(e) => setEditingStaff({ ...editingStaff, location_id: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
+                                            <option value="">No location</option>
+                                            {org.locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
                                         </select>
                                     </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Pay Rate (KES)</label>
-                                        <input type="number" value={editingStaff.pay_rate} onChange={(e) => setEditingStaff({ ...editingStaff, pay_rate: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">Employment Type</label>
+                                            <select value={editingStaff.employment_type} onChange={(e) => setEditingStaff({ ...editingStaff, employment_type: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
+                                                <option value="full-time">Full-time</option>
+                                                <option value="part-time">Part-time</option>
+                                                <option value="casual">Casual</option>
+                                                <option value="contract">Contract</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-slate-700 mb-1">Pay Rate (KES)</label>
+                                            <input type="number" value={editingStaff.pay_rate} onChange={(e) => setEditingStaff({ ...editingStaff, pay_rate: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
+                                        </div>
                                     </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <input type="checkbox" id="is_active" checked={editingStaff.is_active} onChange={(e) => setEditingStaff({ ...editingStaff, is_active: e.target.checked })} className="rounded" />
-                                    <label htmlFor="is_active" className="text-sm text-slate-700">Active Employee</label>
-                                </div>
-                                <div className="flex gap-3 pt-2">
-                                    <button type="submit" disabled={updating} className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2 rounded-lg font-medium disabled:opacity-50">
-                                        {updating ? 'Saving...' : 'Save Changes'}
-                                    </button>
-                                    <button type="button" onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50">Cancel</button>
-                                </div>
-                            </form>
+                                    <div className="flex items-center gap-2">
+                                        <input type="checkbox" id="is_active" checked={editingStaff.is_active} onChange={(e) => setEditingStaff({ ...editingStaff, is_active: e.target.checked })} className="rounded" />
+                                        <label htmlFor="is_active" className="text-sm text-slate-700">Active Employee</label>
+                                    </div>
+                                    <div className="flex gap-3 pt-2">
+                                        <button type="submit" disabled={updating} className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2 rounded-lg font-medium disabled:opacity-50">
+                                            {updating ? 'Saving...' : 'Save Changes'}
+                                        </button>
+                                        <button type="button" onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50">Cancel</button>
+                                    </div>
+                                </form>
+                            </div>
                         </div>
-                    </div>
-                )}
-            </div>
+                    )
+                }
+            </div >
         )
     }
 
@@ -872,9 +1052,140 @@ export default function EmployerDashboard() {
     // ============================================
 
     const VerificationView = () => {
-        const [orgForm, setOrgForm] = useState({ kra_pin: '', business_reg_no: '' })
+        const [orgForm, setOrgForm] = useState({
+            kra_pin: '',
+            business_reg_no: '',
+            business_reg_doc: null,
+            business_reg_expiry: '',
+            facility_license_doc: null,
+            facility_license_expiry: ''
+        })
         const [facForm, setFacForm] = useState({ locationId: '', license_no: '', licensing_body: '', expiry_date: '' })
         const [submitting, setSubmitting] = useState(false)
+        const [uploading, setUploading] = useState(false)
+
+        // Calculate days until expiry
+        const getDaysUntilExpiry = (expiryDate) => {
+            if (!expiryDate) return null
+            const today = new Date()
+            const expiry = new Date(expiryDate)
+            const diffTime = expiry - today
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+            return diffDays
+        }
+
+        // Get expiry warning badge
+        const getExpiryBadge = (expiryDate) => {
+            const days = getDaysUntilExpiry(expiryDate)
+            if (days === null) return null
+
+            if (days < 0) {
+                return <span className="px-2 py-1 rounded text-xs bg-red-100 text-red-700">Expired {Math.abs(days)} days ago</span>
+            } else if (days < 30) {
+                return <span className="px-2 py-1 rounded text-xs bg-red-100 text-red-700">⚠️ Expires in {days} days</span>
+            } else if (days < 60) {
+                return <span className="px-2 py-1 rounded text-xs bg-amber-100 text-amber-700">⚠️ Expires in {days} days</span>
+            }
+            return null
+        }
+
+        //Handle document upload to Supabase Storage
+        const handleDocumentUpload = async (e, documentType) => {
+            const file = e.target.files[0]
+            if (!file) return
+
+            // Validate file type
+            const validTypes = ['application/pdf', 'image/jpeg', 'image/png']
+            if (!validTypes.includes(file.type)) {
+                alert('Please upload a PDF, JPG, or PNG file')
+                return
+            }
+
+            // Validate file size (max 5MB)
+            if (file.size > 5 * 1024 * 1024) {
+                alert('File size must be less than 5MB')
+                return
+            }
+
+            setUploading(true)
+            const clinicId = localStorage.getItem('hure_clinic_id')
+
+            try {
+                // Create FormData to send file
+                const formData = new FormData()
+                formData.append('file', file)
+                formData.append('documentType', documentType)
+                formData.append('expiryDate', documentType === 'business_reg' ? orgForm.business_reg_expiry : orgForm.facility_license_expiry)
+
+                // Upload to backend which will save to Supabase Storage
+                const res = await fetch(`/api/clinics/${clinicId}/documents/upload`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                        // Note: Don't set Content-Type for FormData - browser sets it with boundary
+                    },
+                    body: formData
+                })
+
+                if (res.ok) {
+                    const data = await res.json()
+                    // Update org state with new document URL
+                    setOrg(prev => ({ ...prev, ...data.clinic }))
+
+                    // Update local form state with filename
+                    if (documentType === 'business_reg') {
+                        setOrgForm(prev => ({ ...prev, business_reg_doc: file.name }))
+                    } else {
+                        setOrgForm(prev => ({ ...prev, facility_license_doc: file.name }))
+                    }
+
+                    alert('Document uploaded successfully!')
+                } else {
+                    const err = await res.json()
+                    alert(err.error || 'Failed to upload document')
+                }
+            } catch (err) {
+                console.error('Upload error:', err)
+                alert('Failed to upload document')
+            } finally {
+                setUploading(false)
+            }
+        }
+
+        // Submit for verification
+        const handleSubmitVerification = async () => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+
+            if (!org.business_reg_doc || !org.facility_license_doc) {
+                alert('Please upload both required documents before submitting')
+                return
+            }
+
+            setSubmitting(true)
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/verification/submit`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    }
+                })
+
+                if (res.ok) {
+                    const data = await res.json()
+                    setOrg(prev => ({ ...prev, ...data.clinic }))
+                    alert('Submitted for verification! Our team will review your documents.')
+                } else {
+                    const error = await res.json()
+                    alert(error.error || 'Failed to submit')
+                }
+            } catch (err) {
+                console.error('Submit error:', err)
+                alert('Failed to submit for verification')
+            } finally {
+                setSubmitting(false)
+            }
+        }
 
         const handleOrgSubmit = async (e) => {
             e.preventDefault()
@@ -939,14 +1250,31 @@ export default function EmployerDashboard() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     {/* Organization Verification */}
                     <Card title="Organization Verification" right={
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${org.orgVerificationStatus === 'approved' ? 'bg-green-100 text-green-700' :
-                            org.orgVerificationStatus === 'under_review' ? 'bg-amber-100 text-amber-700' :
-                                org.orgVerificationStatus === 'rejected' ? 'bg-red-100 text-red-700' :
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${org.org_verification_status === 'approved' ? 'bg-green-100 text-green-700' :
+                            org.org_verification_status === 'under_review' ? 'bg-amber-100 text-amber-700' :
+                                org.org_verification_status === 'rejected' ? 'bg-red-100 text-red-700' :
                                     'bg-slate-100 text-slate-600'
                             }`}>
-                            {org.orgVerificationStatus}
+                            {org.org_verification_status || 'draft'}
                         </span>
                     }>
+                        {/* Rejection Reason Alert */}
+                        {org.org_verification_status === 'rejected' && org.verification_rejection_reason && (
+                            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                                <p className="text-sm font-medium text-red-800">❌ Verification Rejected</p>
+                                <p className="text-sm text-red-700 mt-1">{org.verification_rejection_reason}</p>
+                                <p className="text-xs text-red-600 mt-2">Please update your documents and resubmit.</p>
+                            </div>
+                        )}
+
+                        {/* Field Locking Notice */}
+                        {org.org_verification_status === 'approved' && (
+                            <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2">
+                                <span className="text-green-700">🔒</span>
+                                <p className="text-sm text-green-800">Organization verified! Contact support to update details.</p>
+                            </div>
+                        )}
+
                         <form onSubmit={handleOrgSubmit} className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 mb-1">
@@ -959,6 +1287,7 @@ export default function EmployerDashboard() {
                                     onChange={(e) => setOrgForm({ ...orgForm, kra_pin: e.target.value })}
                                     placeholder="e.g., A123456789Z"
                                     className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                    disabled={org.org_verification_status === 'approved'}
                                 />
                             </div>
                             <div>
@@ -970,19 +1299,93 @@ export default function EmployerDashboard() {
                                     placeholder="e.g., PVT-2024-12345"
                                     className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                     required
+                                    disabled={org.org_verification_status === 'approved'}
                                 />
                             </div>
-                            {org.orgVerificationStatus === 'approved' ? (
+
+                            {/* Business Registration Document */}
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="block text-sm font-medium text-slate-700">Business Registration Document *</label>
+                                    {getExpiryBadge(org.business_reg_expiry)}
+                                </div>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="file"
+                                        accept=".pdf,.jpg,.jpeg,.png"
+                                        onChange={(e) => handleDocumentUpload(e, 'business_reg')}
+                                        className="hidden"
+                                        id="business-reg-upload"
+                                        disabled={org.org_verification_status === 'approved' || uploading}
+                                    />
+                                    <label
+                                        htmlFor="business-reg-upload"
+                                        className={`flex-1 px-3 py-2 border rounded-lg cursor-pointer text-sm ${org.org_verification_status === 'approved' ? 'bg-slate-100 cursor-not-allowed' : 'hover:bg-slate-50'
+                                            }`}
+                                    >
+                                        {org.business_reg_doc ? '📄 ' + (orgForm.business_reg_doc || 'Document uploaded') : '📎 Upload PDF, JPG, or PNG'}
+                                    </label>
+                                </div>
+                                <div className="mt-1">
+                                    <label className="block text-xs text-slate-600 mb-1">Expiry Date (if applicable)</label>
+                                    <input
+                                        type="date"
+                                        value={orgForm.business_reg_expiry}
+                                        onChange={(e) => setOrgForm({ ...orgForm, business_reg_expiry: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+                                        disabled={org.org_verification_status === 'approved'}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Facility License Document */}
+                            <div>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="block text-sm font-medium text-slate-700">Facility Operating License *</label>
+                                    {getExpiryBadge(org.facility_license_expiry)}
+                                </div>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="file"
+                                        accept=".pdf,.jpg,.jpeg,.png"
+                                        onChange={(e) => handleDocumentUpload(e, 'facility_license')}
+                                        className="hidden"
+                                        id="facility-license-upload"
+                                        disabled={org.org_verification_status === 'approved' || uploading}
+                                    />
+                                    <label
+                                        htmlFor="facility-license-upload"
+                                        className={`flex-1 px-3 py-2 border rounded-lg cursor-pointer text-sm ${org.org_verification_status === 'approved' ? 'bg-slate-100 cursor-not-allowed' : 'hover:bg-slate-50'
+                                            }`}
+                                    >
+                                        {org.facility_license_doc ? '📄 ' + (orgForm.facility_license_doc || 'Document uploaded') : '📎 Upload PDF, JPG, or PNG'}
+                                    </label>
+                                </div>
+                                <div className="mt-1">
+                                    <label className="block text-xs text-slate-600 mb-1">Expiry Date (if applicable)</label>
+                                    <input
+                                        type="date"
+                                        value={orgForm.facility_license_expiry}
+                                        onChange={(e) => setOrgForm({ ...orgForm, facility_license_expiry: e.target.value })}
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+                                        disabled={org.org_verification_status === 'approved'}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Submit/Resubmit Button */}
+                            {org.org_verification_status === 'approved' ? (
                                 <div className="text-green-600 text-sm font-medium">✓ Your organization is verified!</div>
-                            ) : org.orgVerificationStatus === 'under_review' ? (
+                            ) : org.org_verification_status === 'under_review' ? (
                                 <div className="text-amber-600 text-sm font-medium">⏳ Verification under review...</div>
                             ) : (
                                 <button
-                                    type="submit"
-                                    disabled={submitting}
-                                    className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg disabled:opacity-50"
+                                    type="button"
+                                    onClick={handleSubmitVerification}
+                                    disabled={submitting || uploading || !org.business_reg_doc || !org.facility_license_doc}
+                                    className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                    {submitting ? 'Submitting...' : 'Submit for Review'}
+                                    {submitting ? 'Submitting...' : org.org_verification_status === 'rejected' ? 'Resubmit for Review' : 'Submit for Review'}
                                 </button>
                             )}
                         </form>
@@ -1504,7 +1907,7 @@ export default function EmployerDashboard() {
 
                 {/* Staff Role Assignments */}
                 <Card title="Staff Role Assignments">
-                    {org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app')).length === 0 ? (
+                    {org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false).length === 0 ? (
                         <div className="text-center py-8 text-slate-500">
                             No staff members yet. Add staff first to assign roles.
                         </div>
@@ -1519,7 +1922,7 @@ export default function EmployerDashboard() {
                             </thead>
                             <tbody>
                                 {org.staff
-                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false)
                                     .map(s => {
                                         const staffRole = roles.find(r => r.name === (s.permission_role || 'Staff')) || roles.find(r => r.name === 'Staff')
                                         return (
@@ -1561,98 +1964,116 @@ export default function EmployerDashboard() {
     const PayrollView = () => {
         const [activeTab, setActiveTab] = useState('salaried')
         const [dateRange, setDateRange] = useState({ start: '', end: '' })
+        const [payrollData, setPayrollData] = useState([])
+        const [loadingPayroll, setLoadingPayroll] = useState(false)
+        const [paymentNotes, setPaymentNotes] = useState({})
+        const [updatingPayment, setUpdatingPayment] = useState({})
 
-        const [payrollStats, setPayrollStats] = useState({})
-        const [loadingStats, setLoadingStats] = useState(false)
-
-        // Fetch payroll stats when date range changes
+        // Fetch payroll data when date range changes
         useEffect(() => {
-            const fetchPayrollStats = async () => {
+            const fetchPayroll = async () => {
                 if (!dateRange.start || !dateRange.end) return
 
                 const clinicId = localStorage.getItem('hure_clinic_id')
                 const token = localStorage.getItem('hure_token')
 
-                setLoadingStats(true)
+                setLoadingPayroll(true)
                 try {
                     const res = await fetch(
-                        `/api/clinics/${clinicId}/payroll-stats?startDate=${dateRange.start}&endDate=${dateRange.end}`,
+                        `/api/clinics/${clinicId}/payroll?startDate=${dateRange.start}&endDate=${dateRange.end}`,
                         { headers: { 'Authorization': `Bearer ${token}` } }
                     )
                     if (res.ok) {
                         const data = await res.json()
-                        console.log('📊 Payroll stats received:', data.stats)
-                        setPayrollStats(data.stats || {})
+                        console.log('📊 Payroll data received:', data)
+                        setPayrollData(data.data || [])
                     }
                 } catch (err) {
-                    console.error('Payroll stats fetch error:', err)
+                    console.error('Payroll fetch error:', err)
                 } finally {
-                    setLoadingStats(false)
+                    setLoadingPayroll(false)
                 }
             }
-            fetchPayrollStats()
+            fetchPayroll()
         }, [dateRange.start, dateRange.end])
 
-        // Filter staff by employment type
-        const salariedStaff = org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && (!s.employment_type || s.employment_type === 'full-time' || s.employment_type === 'part-time'))
-        const casualStaff = org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && (s.employment_type === 'casual' || s.employment_type === 'contract'))
+        // Filter payroll data by type
+        const salariedPayroll = payrollData.filter(p => p.employmentType === 'salaried' || p.employmentType === 'full-time' || p.employmentType === 'part-time')
+        const dailyPayroll = payrollData.filter(p => p.employmentType === 'casual' || p.employmentType === 'daily' || p.employmentType === 'contract' || p.type === 'locum')
 
-        // Helper to get stats for a user
-        const getStats = (userId) => payrollStats[userId] || { full_days: 0, half_days: 0, absent_days: 0, total_hours: 0 }
+        // Handle payment status toggle
+        const handlePaymentToggle = async (record) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const newStatus = record.paymentStatus === 'PAID' ? 'UNPAID' : 'PAID'
 
-        // Calculate gross pay for daily/hourly staff
-        const calculateGross = (staff) => {
-            const stats = getStats(staff.id)
-            const rate = staff.pay_rate || 0
-            // Full day = 1 × rate, Half day = 0.5 × rate
-            return (stats.full_days * rate) + (stats.half_days * rate * 0.5)
+            setUpdatingPayment(prev => ({ ...prev, [record.id]: true }))
+
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/payroll/${record.id}/status`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({
+                        paymentStatus: newStatus,
+                        paymentNote: paymentNotes[record.id] || '',
+                        userId: record.userId,
+                        locumId: record.locumId,
+                        periodStart: dateRange.start,
+                        periodEnd: dateRange.end,
+                        unitsWorked: record.unitsWorked,
+                        rate: record.rate,
+                        grossPay: record.grossPay,
+                        payType: record.employmentType
+                    })
+                })
+                if (res.ok) {
+                    setPayrollData(prev => prev.map(p =>
+                        p.id === record.id ? { ...p, paymentStatus: newStatus } : p
+                    ))
+                }
+            } catch (err) {
+                console.error('Update payment status error:', err)
+            } finally {
+                setUpdatingPayment(prev => ({ ...prev, [record.id]: false }))
+            }
         }
 
         // Export payroll to CSV
-        const exportPayrollCSV = () => {
-            const allStaff = [...salariedStaff, ...casualStaff]
+        const exportPayrollCSV = async () => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
 
-            // CSV Headers
-            const headers = ['Staff Name', 'Role', 'Pay Type', 'Full Days', 'Half Days', 'Rate (KSh)', 'Gross (KSh)']
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/payroll/export?startDate=${dateRange.start}&endDate=${dateRange.end}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
 
-            // Generate rows
-            const rows = allStaff.map(s => {
-                const stats = getStats(s.id)
-                const isSalaried = !s.pay_type || s.pay_type === 'monthly'
-                const gross = isSalaried ? (s.pay_rate || 0) : calculateGross(s)
-
-                return [
-                    `${s.first_name} ${s.last_name}`,
-                    s.job_title || 'Staff',
-                    s.pay_type || 'monthly',
-                    stats.full_days,
-                    stats.half_days,
-                    s.pay_rate || 0,
-                    gross
-                ]
-            })
-
-            // Build CSV content
-            const csvContent = [
-                `Payroll Report: ${dateRange.start || 'N/A'} to ${dateRange.end || 'N/A'}`,
-                '',
-                headers.join(','),
-                ...rows.map(row => row.join(','))
-            ].join('\n')
-
-            // Download
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-            const link = document.createElement('a')
-            link.href = URL.createObjectURL(blob)
-            link.download = `payroll_${dateRange.start}_to_${dateRange.end}.csv`
-            link.click()
+                if (res.ok) {
+                    const blob = await res.blob()
+                    const url = window.URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `payroll_${dateRange.start}_${dateRange.end}.csv`
+                    document.body.appendChild(a)
+                    a.click()
+                    document.body.removeChild(a)
+                    window.URL.revokeObjectURL(url)
+                } else {
+                    alert('Failed to export payroll')
+                }
+            } catch (err) {
+                console.error('Export error:', err)
+                alert('Failed to export payroll')
+            }
         }
 
         return (
             <div className="space-y-6">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h1 className="text-xl font-bold">Payroll Export</h1>
+                        <h1 className="text-xl font-bold">Payroll</h1>
                         <p className="text-slate-500 text-sm">Calculate and export payroll based on attendance</p>
                     </div>
                     <button
@@ -1697,16 +2118,26 @@ export default function EmployerDashboard() {
                             >
                                 This Month
                             </button>
-                            <button className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50">Last Month</button>
+                            <button
+                                onClick={() => {
+                                    const now = new Date()
+                                    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+                                    const end = new Date(now.getFullYear(), now.getMonth(), 0)
+                                    setDateRange({ start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] })
+                                }}
+                                className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50"
+                            >
+                                Last Month
+                            </button>
                         </div>
                     </div>
                 </Card>
 
                 {/* Info Panel */}
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-                    <strong>ℹ️ How payroll is calculated:</strong> Payroll is derived from reviewed attendance records within the selected date range.
+                    <strong>ℹ️ How payroll is calculated:</strong> Payroll is derived from attendance records.
                     <div className="mt-2 text-xs">
-                        • <strong>Full Day</strong> = Full shift worked | • <strong>Half Day</strong> = Partial attendance | • <strong>Absent</strong> = No pay (unless salaried) | • <strong>Overtime</strong> = Hours beyond scheduled shift
+                        • <strong>Salaried:</strong> (Salary ÷ Period Days) × Units Worked | • <strong>Daily/Casual:</strong> Units × Daily Rate
                     </div>
                 </div>
 
@@ -1716,110 +2147,126 @@ export default function EmployerDashboard() {
                         onClick={() => setActiveTab('salaried')}
                         className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'salaried' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
                     >
-                        Salaried Staff ({salariedStaff.length})
+                        Salaried Staff ({salariedPayroll.length})
                     </button>
                     <button
                         onClick={() => setActiveTab('daily')}
                         className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'daily' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
                     >
-                        Daily / Casual ({casualStaff.length})
+                        Daily / Casual ({dailyPayroll.length})
                     </button>
                 </div>
 
                 {/* Salaried Staff Tab */}
                 {activeTab === 'salaried' && (
-                    <Card title="Monthly Salaried Staff">
+                    <Card title="Salaried Staff">
                         <p className="text-sm text-slate-500 mb-4">
-                            Gross Pay = (Monthly Salary ÷ Total Days in Period) × Days Worked
+                            Gross Pay = (Monthly Salary ÷ Period Days) × Units Worked
                         </p>
-                        {salariedStaff.length === 0 ? (
-                            <div className="text-center py-8 text-slate-500">No salaried staff found.</div>
-                        ) : (
-                            <table className="w-full">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Days Worked</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Absent</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Total Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Monthly Salary</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {salariedStaff.map(s => {
-                                        const stats = getStats(s.id)
-                                        // Days worked = full days + (half days × 0.5)
-                                        const daysWorked = stats.full_days + (stats.half_days * 0.5)
-                                        // Calculate total days in selected period
-                                        const totalDaysInPeriod = dateRange.start && dateRange.end
-                                            ? Math.ceil((new Date(dateRange.end) - new Date(dateRange.start)) / (1000 * 60 * 60 * 24)) + 1
-                                            : 30  // Default to 30 if no date range selected
-                                        // Gross = (Monthly Salary ÷ Total Days) × Days Worked
-                                        const grossPay = totalDaysInPeriod > 0
-                                            ? ((s.pay_rate || 0) / totalDaysInPeriod) * daysWorked
-                                            : 0
-                                        return (
-                                            <tr key={s.id} className="border-t">
-                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                                <td className="p-3">{s.job_title || 'Staff'}</td>
-                                                <td className="p-3">{loadingStats ? '...' : daysWorked.toFixed(1)}</td>
-                                                <td className="p-3">{loadingStats ? '...' : stats.absent_days}</td>
-                                                <td className="p-3">{totalDaysInPeriod}</td>
-                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
-                                                <td className="p-3 font-medium">KSh {loadingStats ? '...' : Math.round(grossPay).toLocaleString()}</td>
-                                            </tr>
-                                        )
-                                    })}
-                                </tbody>
-                            </table>
-                        )}
-                    </Card>
-                )}
-
-                {/* Daily/Casual Staff Tab */}
-                {activeTab === 'daily' && (
-                    <Card title="Daily / Casual Staff">
-                        <p className="text-sm text-slate-500 mb-4">
-                            Pay calculated as: Full day = 1 unit × daily rate, Half day = 0.5 unit × daily rate
-                        </p>
-                        {casualStaff.length === 0 ? (
+                        {loadingPayroll ? (
+                            <div className="text-center py-8">Loading...</div>
+                        ) : salariedPayroll.length === 0 ? (
                             <div className="text-center py-8 text-slate-500">
-                                No daily/casual staff found. Staff pay types are set in Staff module.
+                                {dateRange.start ? 'No salaried staff with attendance in this period.' : 'Select a date range to view payroll.'}
                             </div>
                         ) : (
                             <table className="w-full">
                                 <thead className="bg-slate-50">
                                     <tr>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Full Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Half Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units Worked</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Rate</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {casualStaff.map(s => {
-                                        const stats = getStats(s.id)
-                                        const gross = calculateGross(s)
-                                        return (
-                                            <tr key={s.id} className="border-t">
-                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                                <td className="p-3">{loadingStats ? '...' : stats.full_days}</td>
-                                                <td className="p-3">{loadingStats ? '...' : stats.half_days}</td>
-                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
-                                                <td className="p-3 font-medium">KSh {loadingStats ? '...' : gross.toLocaleString()}</td>
-                                            </tr>
-                                        )
-                                    })}
+                                    {salariedPayroll.map(record => (
+                                        <tr key={record.id} className="border-t">
+                                            <td className="p-3 font-medium">{record.name}</td>
+                                            <td className="p-3">{record.role || 'Staff'}</td>
+                                            <td className="p-3">{record.unitsWorked?.toFixed(1) || 0}</td>
+                                            <td className="p-3">KSh {(record.rate || 0).toLocaleString()}/mo</td>
+                                            <td className="p-3 font-medium">KSh {(record.grossPay || 0).toLocaleString()}</td>
+                                            <td className="p-3">
+                                                <button
+                                                    onClick={() => handlePaymentToggle(record)}
+                                                    disabled={updatingPayment[record.id]}
+                                                    className={`px-2 py-1 text-xs rounded ${record.paymentStatus === 'PAID'
+                                                        ? 'bg-green-100 text-green-700'
+                                                        : 'bg-amber-100 text-amber-700'
+                                                        }`}
+                                                >
+                                                    {updatingPayment[record.id] ? '...' : (record.paymentStatus || 'UNPAID')}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
                                 </tbody>
                             </table>
                         )}
                     </Card>
                 )}
 
-
+                {/* Daily/Casual Staff Tab (includes External Locums) */}
+                {activeTab === 'daily' && (
+                    <Card title="Daily / Casual Staff">
+                        <p className="text-sm text-slate-500 mb-4">
+                            Includes internal casual staff + external locums. Pay = Units × Daily Rate
+                        </p>
+                        {loadingPayroll ? (
+                            <div className="text-center py-8">Loading...</div>
+                        ) : dailyPayroll.length === 0 ? (
+                            <div className="text-center py-8 text-slate-500">
+                                {dateRange.start ? 'No daily/casual staff or locums with attendance in this period.' : 'Select a date range to view payroll.'}
+                            </div>
+                        ) : (
+                            <table className="w-full">
+                                <thead className="bg-slate-50">
+                                    <tr>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Name</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Type</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {dailyPayroll.map(record => (
+                                        <tr key={record.id} className="border-t">
+                                            <td className="p-3">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-medium">{record.name}</span>
+                                                    {record.type === 'locum' && (
+                                                        <span className="px-2 py-0.5 text-xs bg-teal-100 text-teal-700 rounded-full">External</span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="p-3">{record.type === 'locum' ? 'Locum' : (record.role || 'Casual')}</td>
+                                            <td className="p-3">{record.unitsWorked?.toFixed(1) || 0}</td>
+                                            <td className="p-3">KSh {(record.rate || 0).toLocaleString()}</td>
+                                            <td className="p-3 font-medium">KSh {(record.grossPay || 0).toLocaleString()}</td>
+                                            <td className="p-3">
+                                                <button
+                                                    onClick={() => handlePaymentToggle(record)}
+                                                    disabled={updatingPayment[record.id]}
+                                                    className={`px-2 py-1 text-xs rounded ${record.paymentStatus === 'PAID'
+                                                        ? 'bg-green-100 text-green-700'
+                                                        : 'bg-amber-100 text-amber-700'
+                                                        }`}
+                                                >
+                                                    {updatingPayment[record.id] ? '...' : (record.paymentStatus || 'UNPAID')}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </Card>
+                )}
             </div>
         )
     }
@@ -1999,7 +2446,24 @@ export default function EmployerDashboard() {
                 })
                 if (res.ok) {
                     const data = await res.json()
-                    setSchedules(data.data || [])
+                    const shiftsWithLocums = data.data || []
+
+                    // Fetch locum counts for each shift
+                    for (const shift of shiftsWithLocums) {
+                        try {
+                            const locumRes = await fetch(`/api/clinics/${clinicId}/schedule/${shift.id}/locums`, {
+                                headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                            })
+                            if (locumRes.ok) {
+                                const locumData = await locumRes.json()
+                                shift.locum_count = (locumData.data || []).length
+                            }
+                        } catch (e) {
+                            shift.locum_count = 0
+                        }
+                    }
+
+                    setSchedules(shiftsWithLocums)
                 }
             } catch (err) {
                 console.error('Fetch schedules error:', err)
@@ -2030,9 +2494,100 @@ export default function EmployerDashboard() {
             }
         }
 
-        const handleManageCoverage = (shift) => {
+        const handleManageCoverage = async (shift) => {
             setSelectedShift(shift)
             setShowManageCoverage(true)
+            setCoverageTab('staff')
+            setLocumForm({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
+            setLocums([])
+
+            // Fetch existing locums for this shift
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${shift.id}/locums`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    setLocums(data.data || [])
+                }
+            } catch (err) {
+                console.error('Fetch locums error:', err)
+            }
+        }
+
+        // External locum state
+        const [coverageTab, setCoverageTab] = useState('staff') // 'staff' | 'locum'
+        const [locums, setLocums] = useState([])
+        const [locumForm, setLocumForm] = useState({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
+        const [addingLocum, setAddingLocum] = useState(false)
+
+        const handleAddLocum = async () => {
+            if (!locumForm.name.trim()) {
+                alert('Locum name is required')
+                return
+            }
+            setAddingLocum(true)
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/locums`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({
+                        name: locumForm.name,
+                        phone: locumForm.phone,
+                        supervisorId: locumForm.supervisorId || null,
+                        notes: locumForm.notes,
+                        role: selectedShift.role_required,
+                        dailyRate: parseFloat(locumForm.dailyRate) || 0
+                    })
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    setLocums([data.data, ...locums])
+                    setLocumForm({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
+                } else {
+                    alert('Failed to add locum')
+                }
+            } catch (err) {
+                console.error('Add locum error:', err)
+            } finally {
+                setAddingLocum(false)
+            }
+        }
+
+        const handleRemoveLocum = async (locumId) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/locums/${locumId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    setLocums(locums.filter(l => l.id !== locumId))
+                }
+            } catch (err) {
+                console.error('Remove locum error:', err)
+            }
+        }
+
+        const handleClearLocums = async () => {
+            if (!confirm('Remove all external locums from this shift?')) return
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/locums`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    setLocums([])
+                }
+            } catch (err) {
+                console.error('Clear locums error:', err)
+            }
         }
 
         const handleDeleteShift = async (shiftId) => {
@@ -2066,39 +2621,54 @@ export default function EmployerDashboard() {
                     },
                     body: JSON.stringify({ userId: staffId })
                 })
+                const responseData = await res.json()
                 if (res.ok) {
-                    const updatedRes = await fetch(`/api/clinics/${clinicId}/schedule`, {
-                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
-                    })
-                    if (updatedRes.ok) {
-                        const data = await updatedRes.json()
-                        setSchedules(data.data || [])
-                        const updated = data.data.find(s => s.id === selectedShift.id)
-                        setSelectedShift(updated)
+                    // Get the new assignment from response
+                    const newAssignment = responseData.data
+
+                    // Update selectedShift immediately
+                    const updatedShift = {
+                        ...selectedShift,
+                        schedule_assignments: [...(selectedShift.schedule_assignments || []), newAssignment]
                     }
+                    setSelectedShift(updatedShift)
+
+                    // Update schedules list
+                    setSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, schedule_assignments: [...(s.schedule_assignments || []), newAssignment] }
+                            : s
+                    ))
+                } else {
+                    alert(responseData.error || 'Failed to assign staff')
                 }
             } catch (err) {
                 console.error('Assign staff error:', err)
+                alert('Failed to assign staff')
             }
         }
 
         const handleUnassignStaff = async (assignmentId) => {
             const clinicId = localStorage.getItem('hure_clinic_id')
             try {
-                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/unassign/${assignmentId}`, {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/assignments/${assignmentId}`, {
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
                 if (res.ok) {
-                    const updatedRes = await fetch(`/api/clinics/${clinicId}/schedule`, {
-                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
-                    })
-                    if (updatedRes.ok) {
-                        const data = await updatedRes.json()
-                        setSchedules(data.data || [])
-                        const updated = data.data.find(s => s.id === selectedShift.id)
-                        setSelectedShift(updated)
+                    // Update selectedShift immediately
+                    const updatedShift = {
+                        ...selectedShift,
+                        schedule_assignments: (selectedShift.schedule_assignments || []).filter(a => a.id !== assignmentId)
                     }
+                    setSelectedShift(updatedShift)
+
+                    // Update schedules list
+                    setSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, schedule_assignments: (s.schedule_assignments || []).filter(a => a.id !== assignmentId) }
+                            : s
+                    ))
                 }
             } catch (err) {
                 console.error('Unassign staff error:', err)
@@ -2148,36 +2718,27 @@ export default function EmployerDashboard() {
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Date *</label>
-                                    <input
-                                        type="text"
-                                        value={newShift.date}
-                                        onChange={(e) => {
-                                            let value = e.target.value.replace(/[^\d/]/g, '');
-                                            // Auto-add slashes
-                                            if (value.length === 2 || value.length === 5) {
-                                                if (e.nativeEvent.inputType !== 'deleteContentBackward') {
-                                                    value += '/';
-                                                }
-                                            }
-                                            // Limit to 10 characters (dd/mm/yyyy)
-                                            if (value.length <= 10) {
-                                                setNewShift({ ...newShift, date: value });
-                                            }
-                                        }}
-                                        onBlur={(e) => {
-                                            // Convert dd/mm/yyyy to yyyy-mm-dd for backend
-                                            const parts = e.target.value.split('/');
-                                            if (parts.length === 3) {
-                                                const [day, month, year] = parts;
-                                                const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-                                                setNewShift({ ...newShift, date: isoDate });
-                                            }
-                                        }}
-                                        placeholder="dd/mm/yyyy"
-                                        pattern="\d{2}/\d{2}/\d{4}"
-                                        className="w-full px-3 py-2 rounded-lg border border-slate-300"
-                                        required
-                                    />
+                                    <div className="relative">
+                                        <input
+                                            type="text"
+                                            value={newShift.date ? new Date(newShift.date).toLocaleDateString('en-GB') : ''}
+                                            placeholder="dd/mm/yyyy"
+                                            onClick={(e) => e.target.nextElementSibling.showPicker()}
+                                            readOnly
+                                            className="w-full px-3 py-2 rounded-lg border border-slate-300 cursor-pointer"
+                                            required
+                                        />
+                                        <input
+                                            type="date"
+                                            onChange={(e) => setNewShift({ ...newShift, date: e.target.value })}
+                                            className="absolute inset-0 opacity-0 cursor-pointer -z-10"
+                                            tabIndex={-1}
+                                            required={!newShift.date}
+                                        />
+                                        <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                                            📅
+                                        </div>
+                                    </div>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Start Time *</label>
@@ -2259,7 +2820,7 @@ export default function EmployerDashboard() {
                                     <div className="flex items-center gap-4">
                                         <div className="text-right">
                                             <div className="text-sm text-slate-600">{shift.role_required || 'Any role'}</div>
-                                            <div className="text-xs text-slate-400">{shift.schedule_assignments?.length || 0} / {shift.headcount_required} assigned</div>
+                                            <div className="text-xs text-slate-400">{(shift.schedule_assignments?.length || 0) + (shift.locum_count || 0)} / {shift.headcount_required} assigned</div>
                                         </div>
                                         <div className="flex gap-2">
                                             <button
@@ -2282,10 +2843,11 @@ export default function EmployerDashboard() {
                     )}
                 </Card>
 
-                {/* Manage Coverage Modal */}
+                {/* Manage Coverage Modal - Redesigned per client demo */}
                 {showManageCoverage && selectedShift && (
                     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[80vh] overflow-hidden">
+                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[85vh] overflow-hidden">
+                            {/* Header */}
                             <div className="p-4 border-b flex items-center justify-between">
                                 <h2 className="text-lg font-bold">Manage coverage</h2>
                                 <button
@@ -2293,45 +2855,199 @@ export default function EmployerDashboard() {
                                     className="text-slate-400 hover:text-slate-600 text-2xl"
                                 >×</button>
                             </div>
+
+                            {/* Shift Info */}
                             <div className="p-4 bg-slate-50 border-b">
-                                <div className="font-medium">{formatDate(selectedShift.date)} · {formatTime(selectedShift.start_time)} - {formatTime(selectedShift.end_time)}</div>
-                                <div className="text-sm text-slate-500">Location: {selectedShift.clinic_locations?.name} · Role: {selectedShift.role_required || 'Any'}</div>
-                                <div className="text-sm text-slate-500">Required: {selectedShift.headcount_required} · Assigned: {selectedShift.schedule_assignments?.length || 0}</div>
+                                <div className="font-medium">{formatDate(selectedShift.date)} · {formatTime(selectedShift.start_time)} - {formatTime(selectedShift.end_time)} · {selectedShift.role_required || 'Any Role'}</div>
+                                <div className="text-sm text-slate-500">Location: {selectedShift.clinic_locations?.name}</div>
+                                <div className="text-sm text-slate-500">Required: {selectedShift.headcount_required} · Assigned: {(selectedShift.schedule_assignments?.length || 0) + locums.length}</div>
                             </div>
-                            <div className="p-4 overflow-y-auto max-h-[50vh]">
-                                {selectedShift.schedule_assignments?.length > 0 && (
-                                    <div className="mb-4">
-                                        <h3 className="text-sm font-medium text-slate-700 mb-2">Currently Assigned</h3>
-                                        <div className="space-y-2">
-                                            {selectedShift.schedule_assignments.map(a => (
-                                                <div key={a.id} className="flex items-center justify-between p-2 bg-green-50 rounded-lg border border-green-200">
-                                                    <span className="font-medium text-green-800">{a.users?.first_name} {a.users?.last_name}</span>
-                                                    <button onClick={() => handleUnassignStaff(a.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                <div>
-                                    <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
-                                    <div className="space-y-2">
-                                        {org.staff
-                                            .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
-                                            .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
-                                            .map(staff => (
-                                                <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
-                                                    <div>
-                                                        <span className="font-medium">{staff.first_name} {staff.last_name}</span>
-                                                        <span className="text-sm text-slate-500 ml-2">{staff.job_title}</span>
-                                                    </div>
-                                                    <button onClick={() => handleAssignStaff(staff.id)} className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg">Assign</button>
-                                                </div>
-                                            ))}
-                                    </div>
+
+                            {/* Toggle Tabs */}
+                            <div className="p-4 border-b">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm text-slate-600">Showing:</span>
+                                    <button
+                                        onClick={() => setCoverageTab('staff')}
+                                        className={`px-3 py-1.5 text-sm rounded-lg border ${coverageTab === 'staff'
+                                            ? 'bg-slate-800 text-white border-slate-800'
+                                            : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                    >
+                                        Monthly staff (in-house)
+                                    </button>
+                                    <button
+                                        onClick={() => setCoverageTab('locum')}
+                                        className={`px-3 py-1.5 text-sm rounded-lg border ${coverageTab === 'locum'
+                                            ? 'bg-teal-600 text-white border-teal-600'
+                                            : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                    >
+                                        External locum
+                                    </button>
                                 </div>
                             </div>
-                            <div className="p-4 border-t">
-                                <button onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }} className="w-full px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg">Close</button>
+
+                            {/* Content Area */}
+                            <div className="p-4 overflow-y-auto max-h-[45vh]">
+                                {coverageTab === 'staff' ? (
+                                    <>
+                                        {/* Currently Assigned */}
+                                        {selectedShift.schedule_assignments?.length > 0 && (
+                                            <div className="mb-4">
+                                                <h3 className="text-sm font-medium text-slate-700 mb-2">Currently Assigned</h3>
+                                                <div className="space-y-2">
+                                                    {selectedShift.schedule_assignments.map(a => (
+                                                        <div key={a.id} className="flex items-center justify-between p-2 bg-green-50 rounded-lg border border-green-200">
+                                                            <span className="font-medium text-green-800">{a.users?.first_name} {a.users?.last_name}</span>
+                                                            <button onClick={() => handleUnassignStaff(a.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                        {/* Available Staff */}
+                                        <div>
+                                            <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
+                                            <div className="space-y-2">
+                                                {org.staff
+                                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false)
+                                                    .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
+                                                    .map(staff => (
+                                                        <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
+                                                            <div>
+                                                                <span className="font-medium">{staff.first_name} {staff.last_name}</span>
+                                                                <span className="text-sm text-slate-500 ml-2">{staff.job_title}</span>
+                                                            </div>
+                                                            <button onClick={() => handleAssignStaff(staff.id)} className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg">Assign</button>
+                                                        </div>
+                                                    ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        {/* External Locum Tab */}
+                                        <div className="mb-4">
+                                            <p className="text-sm text-slate-600 mb-2">Add locum / external cover <span className="text-slate-400">(kept for payroll-ready record later)</span></p>
+                                        </div>
+
+                                        {/* Existing Locums */}
+                                        {locums.length > 0 ? (
+                                            <div className="mb-4">
+                                                <h3 className="text-sm font-medium text-slate-700 mb-2">Assigned Locums</h3>
+                                                <div className="space-y-2">
+                                                    {locums.map(l => (
+                                                        <div key={l.id} className="flex items-center justify-between p-2 bg-teal-50 rounded-lg border border-teal-200">
+                                                            <div>
+                                                                <span className="font-medium text-teal-800">{l.name}</span>
+                                                                <span className="ml-2 px-2 py-0.5 text-xs bg-teal-200 text-teal-800 rounded-full">External</span>
+                                                                {l.phone && <span className="text-sm text-slate-500 ml-2">{l.phone}</span>}
+                                                            </div>
+                                                            <button onClick={() => handleRemoveLocum(l.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="mb-4 p-3 bg-slate-100 rounded-lg text-sm text-slate-500 text-center">
+                                                No locums added yet.
+                                            </div>
+                                        )}
+
+                                        {/* Add Locum Form */}
+                                        <div className="space-y-3">
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">External locum name *</label>
+                                                <input
+                                                    type="text"
+                                                    value={locumForm.name}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, name: e.target.value })}
+                                                    placeholder="e.g. Jane Wanjiku"
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Phone (optional)</label>
+                                                <input
+                                                    type="tel"
+                                                    value={locumForm.phone}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, phone: e.target.value })}
+                                                    placeholder="+254..."
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Daily Rate (KSh) *</label>
+                                                <input
+                                                    type="number"
+                                                    value={locumForm.dailyRate}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, dailyRate: e.target.value })}
+                                                    placeholder="e.g. 3000"
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                                                    required
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Supervisor (optional)</label>
+                                                <select
+                                                    value={locumForm.supervisorId}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, supervisorId: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500"
+                                                >
+                                                    <option value="">— Select —</option>
+                                                    {org.staff
+                                                        .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false)
+                                                        .map(staff => (
+                                                            <option key={staff.id} value={staff.id}>{staff.first_name} {staff.last_name}</option>
+                                                        ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Notes (optional)</label>
+                                                <input
+                                                    type="text"
+                                                    value={locumForm.notes}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, notes: e.target.value })}
+                                                    placeholder="Agency / agreed pay / reporting notes"
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                                                />
+                                            </div>
+
+                                            <div className="flex gap-2 pt-2">
+                                                <button
+                                                    onClick={() => setLocumForm({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })}
+                                                    className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50"
+                                                >
+                                                    Clear
+                                                </button>
+                                                <button
+                                                    onClick={handleAddLocum}
+                                                    disabled={addingLocum || !locumForm.name.trim()}
+                                                    className="px-4 py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white rounded-lg disabled:opacity-50"
+                                                >
+                                                    {addingLocum ? 'Adding...' : 'Add locum'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+
+                            {/* Footer */}
+                            <div className="p-4 border-t flex justify-between">
+                                {coverageTab === 'locum' && locums.length > 0 && (
+                                    <button
+                                        onClick={handleClearLocums}
+                                        className="px-4 py-2 text-sm text-red-600 hover:bg-red-50 border border-red-300 rounded-lg"
+                                    >
+                                        Clear locums
+                                    </button>
+                                )}
+                                <button
+                                    onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }}
+                                    className={`px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg ${coverageTab !== 'locum' || locums.length === 0 ? 'w-full' : ''}`}
+                                >
+                                    Close
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -2348,27 +3064,112 @@ export default function EmployerDashboard() {
         const [attendance, setAttendance] = useState([])
         const [attendanceLoading, setAttendanceLoading] = useState(true)
         const [dateFilter, setDateFilter] = useState(new Date().toISOString().split('T')[0])
+        const [endDateFilter, setEndDateFilter] = useState(new Date().toISOString().split('T')[0])
         const [searchName, setSearchName] = useState('')
         const [dateRange, setDateRange] = useState('custom')
 
         useEffect(() => {
             fetchAttendance()
-        }, [dateFilter])
+        }, [dateFilter, endDateFilter])
 
         const fetchAttendance = async () => {
             const clinicId = localStorage.getItem('hure_clinic_id')
             try {
-                const res = await fetch(`/api/clinics/${clinicId}/attendance?startDate=${dateFilter}&endDate=${dateFilter}`, {
+                // Fetch staff attendance (includes locum attendance records from DB)
+                const staffRes = await fetch(`/api/clinics/${clinicId}/attendance?startDate=${dateFilter}&endDate=${endDateFilter}&includeLocums=true`, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
-                if (res.ok) {
-                    const data = await res.json()
-                    setAttendance(data.data || [])
+                let allAttendanceData = []
+                let recordedLocumIds = new Set()
+
+                if (staffRes.ok) {
+                    const data = await staffRes.json()
+                    allAttendanceData = (data.data || []).map(a => {
+                        // Track which locums already have attendance recorded
+                        if (a.external_locum_id) {
+                            recordedLocumIds.add(a.external_locum_id)
+                            return {
+                                ...a,
+                                type: 'locum',
+                                locum_name: a.external_locums?.name || a.locum_name || 'External Locum',
+                                locum_role: a.external_locums?.role || a.locum_role,
+                                recorded: true
+                            }
+                        }
+                        return { ...a, type: 'staff' }
+                    })
                 }
+
+                // Fetch external locums from today's shifts (only ones NOT already recorded)
+                const scheduleRes = await fetch(`/api/clinics/${clinicId}/schedule?startDate=${dateFilter}&endDate=${dateFilter}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+
+                if (scheduleRes.ok) {
+                    const scheduleData = await scheduleRes.json()
+                    const shifts = scheduleData.data || []
+
+                    // For each shift, fetch locums
+                    for (const shift of shifts) {
+                        const locumRes = await fetch(`/api/clinics/${clinicId}/schedule/${shift.id}/locums`, {
+                            headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                        })
+                        if (locumRes.ok) {
+                            const locums = await locumRes.json()
+                            for (const locum of (locums.data || [])) {
+                                // Skip if already has attendance recorded
+                                if (recordedLocumIds.has(locum.id)) continue
+
+                                allAttendanceData.push({
+                                    id: `locum_${locum.id}`,
+                                    locum_id: locum.id,
+                                    type: 'locum',
+                                    locum_name: locum.name,
+                                    locum_role: locum.role,
+                                    locum_phone: locum.phone,
+                                    shift_id: shift.id,
+                                    shift_date: shift.date,
+                                    shift_time: `${shift.start_time?.slice(0, 5)} - ${shift.end_time?.slice(0, 5)}`,
+                                    location_name: shift.clinic_locations?.name,
+                                    status: null,
+                                    recorded: false
+                                })
+                            }
+                        }
+                    }
+                }
+
+                setAttendance(allAttendanceData)
             } catch (err) {
                 console.error('Fetch attendance error:', err)
             } finally {
                 setAttendanceLoading(false)
+            }
+        }
+
+        const handleLocumAttendance = async (locum, status) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/attendance/locum`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({
+                        externalLocumId: locum.locum_id,
+                        date: dateFilter,
+                        status: status
+                    })
+                })
+                if (res.ok) {
+                    // Update local state
+                    setAttendance(prev => prev.map(a =>
+                        a.id === locum.id ? { ...a, status: status, recorded: true } : a
+                    ))
+                }
+            } catch (err) {
+                console.error('Record locum attendance error:', err)
             }
         }
 
@@ -2389,24 +3190,54 @@ export default function EmployerDashboard() {
 
         const setQuickDateRange = (range) => {
             const now = new Date()
+            const today = new Date().toISOString().split('T')[0]
             let startDate
 
             if (range === 'today') {
-                startDate = now.toISOString().split('T')[0]
+                startDate = today
             } else if (range === 'week') {
                 const dayOfWeek = now.getDay()
                 const diff = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-                startDate = new Date(now.setDate(now.getDate() - diff)).toISOString().split('T')[0]
+                const weekStart = new Date(now)
+                weekStart.setDate(now.getDate() - diff)
+                startDate = weekStart.toISOString().split('T')[0]
             } else if (range === 'month') {
                 startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
             }
             setDateFilter(startDate)
+            setEndDateFilter(today)
             setDateRange(range)
         }
 
         const filteredAttendance = attendance.filter(a => {
-            const staffName = `${a.user?.first_name || ''} ${a.user?.last_name || ''}`.toLowerCase()
-            return staffName.includes(searchName.toLowerCase())
+            const search = searchName.toLowerCase()
+            if (!search) return true // Show all if search is empty
+
+            if (a.type === 'locum') {
+                // Search locum: name, role, location, status
+                const locumName = (a.locum_name || '').toLowerCase()
+                const locumRole = (a.locum_role || '').toLowerCase()
+                const location = (a.clinic_locations?.name || '').toLowerCase()
+                const status = (a.status || a.locum_status || '').toLowerCase()
+
+                return locumName.includes(search) ||
+                    locumRole.includes(search) ||
+                    location.includes(search) ||
+                    status.includes(search)
+            } else {
+                // Search staff: name, job title, location, status
+                const firstName = (a.users?.first_name || '').toLowerCase()
+                const lastName = (a.users?.last_name || '').toLowerCase()
+                const jobTitle = (a.users?.job_title || '').toLowerCase()
+                const location = (a.clinic_locations?.name || '').toLowerCase()
+                const status = (a.status || '').toLowerCase()
+
+                return firstName.includes(search) ||
+                    lastName.includes(search) ||
+                    jobTitle.includes(search) ||
+                    location.includes(search) ||
+                    status.includes(search)
+            }
         })
 
         return (
@@ -2453,13 +3284,23 @@ export default function EmployerDashboard() {
                             </button>
                         </div>
 
-                        {/* Custom Date Picker */}
-                        <input
-                            type="date"
-                            value={dateFilter}
-                            onChange={(e) => { setDateFilter(e.target.value); setDateRange('custom') }}
-                            className="px-3 py-2 rounded-lg border border-slate-300"
-                        />
+                        {/* Custom Date Range Picker */}
+                        <div className="flex items-center gap-2">
+                            <label className="text-sm text-slate-600">From:</label>
+                            <input
+                                type="date"
+                                value={dateFilter}
+                                onChange={(e) => { setDateFilter(e.target.value); setDateRange('custom') }}
+                                className="px-3 py-2 rounded-lg border border-slate-300"
+                            />
+                            <label className="text-sm text-slate-600">To:</label>
+                            <input
+                                type="date"
+                                value={endDateFilter}
+                                onChange={(e) => { setEndDateFilter(e.target.value); setDateRange('custom') }}
+                                className="px-3 py-2 rounded-lg border border-slate-300"
+                            />
+                        </div>
                     </div>
                 </div>
 
@@ -2517,16 +3358,55 @@ export default function EmployerDashboard() {
                                 {filteredAttendance.map(record => (
                                     <tr key={record.id} className="border-t">
                                         <td className="p-3">
-                                            <div className="font-medium">{record.user?.first_name} {record.user?.last_name}</div>
-                                            <div className="text-xs text-slate-500">{record.user?.job_title}</div>
+                                            {record.type === 'locum' ? (
+                                                <>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="font-medium">{record.locum_name || 'External Locum'}</span>
+                                                        <span className="px-2 py-0.5 text-xs bg-teal-100 text-teal-700 rounded-full">External</span>
+                                                    </div>
+                                                    <div className="text-xs text-slate-500">{record.locum_role} · {record.shift_time}</div>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <div className="font-medium">{record.users?.first_name || record.user?.first_name} {record.users?.last_name || record.user?.last_name}</div>
+                                                    <div className="text-xs text-slate-500">{record.users?.job_title || record.user?.job_title}</div>
+                                                </>
+                                            )}
                                         </td>
-                                        <td className="p-3 text-sm">{formatTime(record.clock_in)}</td>
-                                        <td className="p-3 text-sm">{formatTime(record.clock_out)}</td>
+                                        <td className="p-3 text-sm">
+                                            {record.type === 'locum' ? <span className="text-slate-400">—</span> : formatTime(record.clock_in)}
+                                        </td>
+                                        <td className="p-3 text-sm">
+                                            {record.type === 'locum' ? <span className="text-slate-400">—</span> : formatTime(record.clock_out)}
+                                        </td>
                                         <td className="p-3 text-sm">{record.total_hours ? `${record.total_hours}h` : '-'}</td>
                                         <td className="p-3">
-                                            <span className={`px-2 py-1 rounded text-xs ${getStatusColor(record.status)}`}>
-                                                {record.status?.replace('_', ' ') || 'No clock-out'}
-                                            </span>
+                                            {record.type === 'locum' ? (
+                                                record.recorded || record.status ? (
+                                                    <span className={`px-2 py-1 rounded text-xs ${record.status === 'WORKED' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                        {record.status}
+                                                    </span>
+                                                ) : (
+                                                    <div className="flex gap-1">
+                                                        <button
+                                                            onClick={() => handleLocumAttendance(record, 'WORKED')}
+                                                            className="px-2 py-1 text-xs bg-green-600 hover:bg-green-700 text-white rounded"
+                                                        >
+                                                            Worked
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleLocumAttendance(record, 'NO_SHOW')}
+                                                            className="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded"
+                                                        >
+                                                            No-Show
+                                                        </button>
+                                                    </div>
+                                                )
+                                            ) : (
+                                                <span className={`px-2 py-1 rounded text-xs ${getStatusColor(record.status)}`}>
+                                                    {record.status?.replace('_', ' ') || 'No clock-out'}
+                                                </span>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}

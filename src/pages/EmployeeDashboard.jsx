@@ -27,7 +27,9 @@ export default function EmployeeDashboard() {
         jobTitle: 'Staff',
         location: '',
         hireDate: '',
-        clinicName: ''
+        clinicName: '',
+        role: 'Staff', // Default role
+        permission_role: null
     })
 
     // Schedule data
@@ -49,7 +51,7 @@ export default function EmployeeDashboard() {
     const [staffList, setStaffList] = useState([])
 
     // Get user's role
-    const userRole = profile.jobTitle || 'Staff'
+    const userRole = profile.permission_role || profile.role || 'Staff'
     const permissions = ROLE_PERMISSIONS[userRole] || ROLE_PERMISSIONS['Staff']
     const hasPermission = (perm) => permissions.includes(perm)
     const isManager = userRole !== 'Staff'
@@ -117,12 +119,12 @@ export default function EmployeeDashboard() {
                 }
 
                 // Fetch team schedules
-                const teamSchedRes = await fetch(`/api/clinics/${clinicId}/schedules`, {
+                const teamSchedRes = await fetch(`/api/clinics/${clinicId}/schedule`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 })
                 if (teamSchedRes.ok) {
                     const data = await teamSchedRes.json()
-                    setTeamSchedules(data.schedules || [])
+                    setTeamSchedules(data.data || [])
                 }
 
                 // Fetch pending leave approvals
@@ -382,6 +384,12 @@ export default function EmployeeDashboard() {
         const [showManageCoverage, setShowManageCoverage] = useState(false)
         const [selectedShift, setSelectedShift] = useState(null)
 
+        // External locum state
+        const [coverageTab, setCoverageTab] = useState('staff')
+        const [locums, setLocums] = useState([])
+        const [locumForm, setLocumForm] = useState({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
+        const [addingLocum, setAddingLocum] = useState(false)
+
         const handleDeleteShift = async (shiftId) => {
             if (!confirm('Are you sure you want to delete this shift?')) return
             const token = localStorage.getItem('hure_token')
@@ -392,7 +400,6 @@ export default function EmployeeDashboard() {
                     headers: { 'Authorization': `Bearer ${token}` }
                 })
                 if (res.ok) {
-                    // Update local state
                     setTeamSchedules(prev => prev.filter(s => s.id !== shiftId))
                     alert('Shift deleted successfully')
                 } else {
@@ -407,7 +414,6 @@ export default function EmployeeDashboard() {
             const clinicId = localStorage.getItem('hure_clinic_id')
             const token = localStorage.getItem('hure_token')
             try {
-                // Determine if this is a pending request or direct assignment
                 const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/assign`, {
                     method: 'POST',
                     headers: {
@@ -416,15 +422,22 @@ export default function EmployeeDashboard() {
                     },
                     body: JSON.stringify({ userId: staffId })
                 })
+                const data = await res.json()
                 if (res.ok) {
-                    const { data: newAssignment } = await res.json()
-                    // Update selected shift locally
+                    const newAssignment = data.data
                     setSelectedShift(prev => ({
                         ...prev,
                         schedule_assignments: [...(prev.schedule_assignments || []), newAssignment]
                     }))
-                    // Update main list
-                    fetchData()
+                    // Also update the teamSchedules list to reflect the count
+                    setTeamSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, schedule_assignments: [...(s.schedule_assignments || []), newAssignment] }
+                            : s
+                    ))
+                } else {
+                    console.error('Assign staff error:', data)
+                    alert(data.error || 'Failed to assign staff')
                 }
             } catch (err) {
                 console.error('Assign staff error:', err)
@@ -436,21 +449,113 @@ export default function EmployeeDashboard() {
             const clinicId = localStorage.getItem('hure_clinic_id')
             const token = localStorage.getItem('hure_token')
             try {
-                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/unassign/${assignmentId}`, {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/assignments/${assignmentId}`, {
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${token}` }
                 })
                 if (res.ok) {
-                    // Update selected shift locally
                     setSelectedShift(prev => ({
                         ...prev,
                         schedule_assignments: prev.schedule_assignments.filter(a => a.id !== assignmentId)
                     }))
-                    // Update main list
-                    fetchData()
+                    // Also update the teamSchedules list for count
+                    setTeamSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, schedule_assignments: s.schedule_assignments.filter(a => a.id !== assignmentId) }
+                            : s
+                    ))
                 }
             } catch (err) {
                 console.error('Unassign staff error:', err)
+            }
+        }
+
+        const handleManageCoverage = async (shift) => {
+            setSelectedShift(shift)
+            setShowManageCoverage(true)
+            setCoverageTab('staff')
+            setLocumForm({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
+            setLocums([])
+
+            // Fetch existing locums for this shift
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${shift.id}/locums`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    const fetchedLocums = data.data || []
+                    setLocums(fetchedLocums)
+                    // Note: Don't call setTeamSchedules here as it causes parent re-render
+                    // which resets the useState hooks inside this component and closes the modal
+                }
+            } catch (err) {
+                console.error('Fetch locums error:', err)
+            }
+        }
+
+        const handleAddLocum = async () => {
+            if (!locumForm.name.trim()) {
+                alert('Locum name is required')
+                return
+            }
+            setAddingLocum(true)
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/locums`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({
+                        name: locumForm.name,
+                        phone: locumForm.phone,
+                        supervisorId: locumForm.supervisorId || null,
+                        notes: locumForm.notes,
+                        role: selectedShift.role_required,
+                        dailyRate: parseFloat(locumForm.dailyRate) || 0
+                    })
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    setLocums([data.data, ...locums])
+                    setLocumForm({ name: '', phone: '', supervisorId: '', notes: '' })
+                    // Update teamSchedules locum_count for the card
+                    setTeamSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, locum_count: (s.locum_count || 0) + 1 }
+                            : s
+                    ))
+                } else {
+                    alert('Failed to add locum')
+                }
+            } catch (err) {
+                console.error('Add locum error:', err)
+            } finally {
+                setAddingLocum(false)
+            }
+        }
+
+        const handleRemoveLocum = async (locumId) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/schedule/${selectedShift.id}/locums/${locumId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+                if (res.ok) {
+                    setLocums(prev => prev.filter(l => l.id !== locumId))
+                    // Update teamSchedules locum_count for the card
+                    setTeamSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, locum_count: Math.max((s.locum_count || 1) - 1, 0) }
+                            : s
+                    ))
+                }
+            } catch (err) {
+                console.error('Remove locum error:', err)
             }
         }
 
@@ -479,7 +584,9 @@ export default function EmployeeDashboard() {
                     ) : (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                             {teamSchedules.map(shift => {
-                                const assignedCount = shift.schedule_assignments?.length || 0
+                                const staffCount = shift.schedule_assignments?.length || 0
+                                const locumCount = shift.locum_count || 0
+                                const assignedCount = staffCount + locumCount
                                 const progress = Math.min((assignedCount / shift.headcount_required) * 100, 100)
                                 const isFullyStaffed = assignedCount >= shift.headcount_required
 
@@ -523,7 +630,7 @@ export default function EmployeeDashboard() {
                                         </div>
                                         {hasPermission('manage_schedule') && (
                                             <button
-                                                onClick={() => { setSelectedShift(shift); setShowManageCoverage(true) }}
+                                                onClick={() => handleManageCoverage(shift)}
                                                 className="mt-3 w-full py-1.5 text-xs font-medium text-primary-600 bg-primary-50 hover:bg-primary-100 rounded-lg"
                                             >
                                                 Manage Coverage
@@ -536,10 +643,10 @@ export default function EmployeeDashboard() {
                     )}
                 </Card>
 
-                {/* Manage Coverage Modal */}
+                {/* Manage Coverage Modal with Tabs */}
                 {showManageCoverage && selectedShift && (
                     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[80vh] overflow-hidden">
+                        <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[85vh] overflow-hidden">
                             <div className="p-4 border-b flex items-center justify-between">
                                 <h2 className="text-lg font-bold">Manage coverage</h2>
                                 <button
@@ -548,56 +655,127 @@ export default function EmployeeDashboard() {
                                 >×</button>
                             </div>
                             <div className="p-4 bg-slate-50 border-b">
-                                <div className="font-medium">{formatDate(selectedShift.date)} · {formatTime(selectedShift.start_time)} - {formatTime(selectedShift.end_time)}</div>
-                                <div className="text-sm text-slate-500">Location: {selectedShift.clinic_locations?.name} · Role: {selectedShift.role_required || 'Any'}</div>
-                                <div className="text-sm text-slate-500">
-                                    Required: {selectedShift.headcount_required} ·
-                                    Assigned: {selectedShift.schedule_assignments?.filter(a => a.status === 'confirmed').length || 0} ·
-                                    Pending: {selectedShift.schedule_assignments?.filter(a => a.status === 'pending').length || 0}
-                                </div>
+                                <div className="font-medium">{formatDate(selectedShift.date)} · {formatTime(selectedShift.start_time)} - {formatTime(selectedShift.end_time)} · {selectedShift.role_required || 'Any'}</div>
+                                <div className="text-sm text-slate-500">Location: {selectedShift.clinic_locations?.name}</div>
+                                <div className="text-sm text-slate-500">Required: {selectedShift.headcount_required} · Assigned: {(selectedShift.schedule_assignments?.length || 0) + locums.length}</div>
                             </div>
-                            <div className="p-4 overflow-y-auto max-h-[50vh]">
-                                {selectedShift.schedule_assignments?.length > 0 && (
-                                    <div className="mb-4">
-                                        <h3 className="text-sm font-medium text-slate-700 mb-2">Currently Assigned / Pending</h3>
-                                        <div className="space-y-2">
-                                            {selectedShift.schedule_assignments.map(a => (
-                                                <div key={a.id} className={`flex items-center justify-between p-2 rounded-lg border ${a.status === 'pending' ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200'
-                                                    }`}>
-                                                    <div className="flex flex-col">
-                                                        <span className={`font-medium ${a.status === 'pending' ? 'text-amber-800' : 'text-green-800'}`}>
-                                                            {a.users?.first_name} {a.users?.last_name}
-                                                        </span>
-                                                        <span className="text-xs text-slate-500">
-                                                            {a.status === 'pending' ? '⏳ Pending Acceptance' : '✓ Confirmed'}
-                                                        </span>
-                                                    </div>
-                                                    <button onClick={() => handleUnassignStaff(a.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+
+                            {/* Tab Switcher */}
+                            <div className="flex border-b">
+                                <button
+                                    onClick={() => setCoverageTab('staff')}
+                                    className={`flex-1 px-4 py-2.5 text-sm font-medium ${coverageTab === 'staff' ? 'bg-white border-b-2 border-primary-600 text-primary-600' : 'bg-slate-50 text-slate-500'}`}
+                                >
+                                    Monthly staff (in-house)
+                                </button>
+                                <button
+                                    onClick={() => setCoverageTab('locum')}
+                                    className={`flex-1 px-4 py-2.5 text-sm font-medium ${coverageTab === 'locum' ? 'bg-white border-b-2 border-primary-600 text-primary-600' : 'bg-slate-50 text-slate-500'}`}
+                                >
+                                    External locum
+                                </button>
+                            </div>
+
+                            <div className="p-4 overflow-y-auto max-h-[45vh]">
+                                {coverageTab === 'staff' ? (
+                                    <>
+                                        {selectedShift.schedule_assignments?.length > 0 && (
+                                            <div className="mb-4">
+                                                <h3 className="text-sm font-medium text-slate-700 mb-2">Currently Assigned</h3>
+                                                <div className="space-y-2">
+                                                    {selectedShift.schedule_assignments.map(a => (
+                                                        <div key={a.id} className={`flex items-center justify-between p-2 rounded-lg border ${a.status === 'pending' ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200'}`}>
+                                                            <div className="flex flex-col">
+                                                                <span className={`font-medium ${a.status === 'pending' ? 'text-amber-800' : 'text-green-800'}`}>
+                                                                    {a.users?.first_name} {a.users?.last_name}
+                                                                </span>
+                                                                <span className="text-xs text-slate-500">
+                                                                    {a.status === 'pending' ? '⏳ Pending' : '✓ Confirmed'}
+                                                                </span>
+                                                            </div>
+                                                            <button onClick={() => handleUnassignStaff(a.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+                                                        </div>
+                                                    ))}
                                                 </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                <div>
-                                    <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
-                                    <div className="space-y-2">
-                                        {staffList
-                                            .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
-                                            .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
-                                            .map(staff => (
-                                                <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
-                                                    <div>
-                                                        <span className="font-medium">{staff.first_name} {staff.last_name}</span>
-                                                        <span className="text-sm text-slate-500 ml-2">{staff.job_title}</span>
-                                                    </div>
-                                                    <button onClick={() => handleAssignStaff(staff.id)} className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg">Assign</button>
-                                                </div>
-                                            ))}
-                                        {staffList.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app')).length === 0 && (
-                                            <div className="text-center text-sm text-slate-400 py-2">No available staff found</div>
+                                            </div>
                                         )}
-                                    </div>
-                                </div>
+                                        <div>
+                                            <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
+                                            <div className="space-y-2">
+                                                {staffList
+                                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                                    .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
+                                                    .map(staff => (
+                                                        <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
+                                                            <div>
+                                                                <span className="font-medium">{staff.first_name} {staff.last_name}</span>
+                                                                <span className="text-sm text-slate-500 ml-2">{staff.job_title}</span>
+                                                            </div>
+                                                            <button onClick={() => handleAssignStaff(staff.id)} className="px-3 py-1 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg">Assign</button>
+                                                        </div>
+                                                    ))}
+                                            </div>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        {/* Add Locum Form */}
+                                        <div className="space-y-3">
+                                            <div>
+                                                <label className="block text-xs text-slate-500 mb-1">Locum Name *</label>
+                                                <input
+                                                    type="text"
+                                                    value={locumForm.name}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, name: e.target.value })}
+                                                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                                                    placeholder="Enter locum name"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-slate-500 mb-1">Phone</label>
+                                                <input
+                                                    type="text"
+                                                    value={locumForm.phone}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, phone: e.target.value })}
+                                                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                                                    placeholder="Phone number"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs text-slate-500 mb-1">Notes</label>
+                                                <textarea
+                                                    value={locumForm.notes}
+                                                    onChange={(e) => setLocumForm({ ...locumForm, notes: e.target.value })}
+                                                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                                                    rows={2}
+                                                    placeholder="Any notes..."
+                                                />
+                                            </div>
+                                            <div className="flex gap-2 pt-2">
+                                                <button onClick={() => setLocumForm({ name: '', phone: '', supervisorId: '', notes: '' })} className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50">Clear</button>
+                                                <button onClick={handleAddLocum} disabled={addingLocum || !locumForm.name.trim()} className="px-4 py-2 text-sm bg-teal-600 hover:bg-teal-700 text-white rounded-lg disabled:opacity-50">{addingLocum ? 'Adding...' : 'Add locum'}</button>
+                                            </div>
+                                        </div>
+
+                                        {/* Assigned Locums */}
+                                        {locums.length > 0 && (
+                                            <div className="mt-4 pt-4 border-t">
+                                                <h3 className="text-sm font-medium text-slate-700 mb-2">Assigned External Locums</h3>
+                                                <div className="space-y-2">
+                                                    {locums.map(l => (
+                                                        <div key={l.id} className="flex items-center justify-between p-2 bg-teal-50 border border-teal-200 rounded-lg">
+                                                            <div>
+                                                                <span className="font-medium text-teal-800">{l.name}</span>
+                                                                <span className="text-xs text-teal-600 ml-2">{l.phone}</span>
+                                                            </div>
+                                                            <button onClick={() => handleRemoveLocum(l.id)} className="text-red-600 hover:text-red-700 text-sm">Remove</button>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
                             </div>
                             <div className="p-4 border-t">
                                 <button onClick={() => { setShowManageCoverage(false); setSelectedShift(null) }} className="w-full px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg">Close</button>
@@ -1204,100 +1382,84 @@ export default function EmployeeDashboard() {
     const PayrollView = () => {
         const [activeTab, setActiveTab] = useState('salaried')
         const [dateRange, setDateRange] = useState({ start: '', end: '' })
-        const [allStaff, setAllStaff] = useState([])
-        const [payrollStats, setPayrollStats] = useState({})
-        const [loadingStats, setLoadingStats] = useState(false)
+        const [payrollData, setPayrollData] = useState([])
+        const [loadingPayroll, setLoadingPayroll] = useState(false)
+        const [updatingPayment, setUpdatingPayment] = useState({})
 
-        // Fetch all staff on mount
+        // Fetch payroll data when date range changes
         useEffect(() => {
-            const fetchStaff = async () => {
-                const clinicId = localStorage.getItem('hure_clinic_id')
-                try {
-                    const res = await fetch(`/api/clinics/${clinicId}/staff?includeOwner=true`, {
-                        headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
-                    })
-                    if (res.ok) {
-                        const data = await res.json()
-                        setAllStaff(data.data || [])
-                    }
-                } catch (err) {
-                    console.error('Fetch staff error:', err)
-                }
-            }
-            fetchStaff()
-        }, [])
-
-        // Fetch payroll stats when date range changes
-        useEffect(() => {
-            const fetchPayrollStats = async () => {
+            const fetchPayroll = async () => {
                 if (!dateRange.start || !dateRange.end) return
                 const clinicId = localStorage.getItem('hure_clinic_id')
-                setLoadingStats(true)
+                setLoadingPayroll(true)
                 try {
-                    const res = await fetch(`/api/clinics/${clinicId}/payroll-stats?startDate=${dateRange.start}&endDate=${dateRange.end}`, {
+                    const res = await fetch(`/api/clinics/${clinicId}/payroll?startDate=${dateRange.start}&endDate=${dateRange.end}`, {
                         headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                     })
                     if (res.ok) {
                         const data = await res.json()
-                        setPayrollStats(data.stats || {})
+                        setPayrollData(data.data || [])
                     }
                 } catch (err) {
-                    console.error('Fetch payroll stats error:', err)
+                    console.error('Fetch payroll error:', err)
                 } finally {
-                    setLoadingStats(false)
+                    setLoadingPayroll(false)
                 }
             }
-            fetchPayrollStats()
+            fetchPayroll()
         }, [dateRange.start, dateRange.end])
 
-        // Filter staff by pay type
-        const salariedStaff = allStaff.filter(s => !s.pay_type || s.pay_type === 'monthly')
-        const dailyStaff = allStaff.filter(s => s.pay_type === 'daily' || s.pay_type === 'hourly')
+        // Filter payroll data by type
+        const salariedPayroll = payrollData.filter(p => p.employmentType === 'salaried' || p.employmentType === 'full-time' || p.employmentType === 'part-time')
+        const dailyPayroll = payrollData.filter(p => p.employmentType === 'casual' || p.employmentType === 'daily' || p.employmentType === 'contract' || p.type === 'locum')
 
-        const getStats = (userId) => payrollStats[userId] || { full_days: 0, half_days: 0, absent_days: 0, total_hours: 0 }
-
-        const calculateGross = (staff) => {
-            const stats = getStats(staff.id)
-            const rate = staff.pay_rate || 0
-            return (stats.full_days * rate) + (stats.half_days * rate * 0.5)
+        // Handle payment status toggle
+        const handlePaymentToggle = async (record) => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const newStatus = record.paymentStatus === 'PAID' ? 'UNPAID' : 'PAID'
+            setUpdatingPayment(prev => ({ ...prev, [record.id]: true }))
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/payroll/${record.id}/status`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
+                    },
+                    body: JSON.stringify({
+                        paymentStatus: newStatus,
+                        userId: record.userId,
+                        locumId: record.locumId,
+                        periodStart: dateRange.start,
+                        periodEnd: dateRange.end,
+                        unitsWorked: record.unitsWorked,
+                        rate: record.rate,
+                        grossPay: record.grossPay,
+                        payType: record.employmentType
+                    })
+                })
+                if (res.ok) {
+                    setPayrollData(prev => prev.map(p =>
+                        p.id === record.id ? { ...p, paymentStatus: newStatus } : p
+                    ))
+                }
+            } catch (err) {
+                console.error('Update payment status error:', err)
+            } finally {
+                setUpdatingPayment(prev => ({ ...prev, [record.id]: false }))
+            }
         }
 
         // Export payroll to CSV
         const exportPayrollCSV = () => {
-            const allStaffList = [...salariedStaff, ...dailyStaff]
-            const headers = ['Staff Name', 'Role', 'Pay Type', 'Full Days', 'Half Days', 'Rate (KSh)', 'Gross (KSh)']
-            const rows = allStaffList.map(s => {
-                const stats = getStats(s.id)
-                const isSalaried = !s.pay_type || s.pay_type === 'monthly'
-                const gross = isSalaried ? (s.pay_rate || 0) : calculateGross(s)
-                return [
-                    `${s.first_name} ${s.last_name}`,
-                    s.job_title || 'Staff',
-                    s.pay_type || 'monthly',
-                    stats.full_days,
-                    stats.half_days,
-                    s.pay_rate || 0,
-                    gross
-                ]
-            })
-            const csvContent = [
-                `Payroll Report: ${dateRange.start || 'N/A'} to ${dateRange.end || 'N/A'}`,
-                '',
-                headers.join(','),
-                ...rows.map(row => row.join(','))
-            ].join('\n')
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-            const link = document.createElement('a')
-            link.href = URL.createObjectURL(blob)
-            link.download = `payroll_${dateRange.start}_to_${dateRange.end}.csv`
-            link.click()
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            window.open(`/api/clinics/${clinicId}/payroll/export?startDate=${dateRange.start}&endDate=${dateRange.end}`, '_blank')
         }
 
         return (
             <div className="space-y-6">
                 <div className="flex items-center justify-between">
                     <div>
-                        <h1 className="text-xl font-bold">Payroll Export</h1>
+                        <h1 className="text-xl font-bold">Payroll</h1>
                         <p className="text-slate-500 text-sm">Calculate and export payroll based on attendance</p>
                     </div>
                     <button
@@ -1359,9 +1521,9 @@ export default function EmployeeDashboard() {
 
                 {/* Info Panel */}
                 <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-                    <strong>ℹ️ How payroll is calculated:</strong> Payroll is derived from reviewed attendance records within the selected date range.
+                    <strong>ℹ️ How payroll is calculated:</strong> Payroll is derived from attendance records.
                     <div className="mt-2 text-xs">
-                        • <strong>Full Day</strong> = Full shift worked | • <strong>Half Day</strong> = Partial attendance | • <strong>Absent</strong> = No pay (unless salaried) | • <strong>Overtime</strong> = Hours beyond scheduled shift
+                        • <strong>Salaried:</strong> (Salary ÷ Period Days) × Units Worked | • <strong>Daily/Casual:</strong> Units × Daily Rate
                     </div>
                 </div>
 
@@ -1371,93 +1533,115 @@ export default function EmployeeDashboard() {
                         onClick={() => setActiveTab('salaried')}
                         className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'salaried' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
                     >
-                        Salaried Staff ({salariedStaff.length})
+                        Salaried Staff ({salariedPayroll.length})
                     </button>
                     <button
                         onClick={() => setActiveTab('daily')}
                         className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'daily' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
                     >
-                        Daily / Casual ({dailyStaff.length})
+                        Daily / Casual ({dailyPayroll.length})
                     </button>
                 </div>
 
                 {/* Salaried Staff Tab */}
                 {activeTab === 'salaried' && (
-                    <Card title="Monthly Salaried Staff">
+                    <Card title="Salaried Staff">
                         <p className="text-sm text-slate-500 mb-4">
-                            Attendance is for reporting purposes. Salary is not auto-deducted for absences.
+                            Gross Pay = (Monthly Salary ÷ Period Days) × Units Worked
                         </p>
-                        {salariedStaff.length === 0 ? (
-                            <div className="text-center py-8 text-slate-500">No salaried staff found.</div>
-                        ) : (
-                            <table className="w-full">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Days Present</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Absent</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Late</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Monthly Salary</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {salariedStaff.map(s => {
-                                        const stats = getStats(s.id)
-                                        const daysPresent = stats.full_days + stats.half_days
-                                        return (
-                                            <tr key={s.id} className="border-t">
-                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                                <td className="p-3">{s.job_title || 'Staff'}</td>
-                                                <td className="p-3">{loadingStats ? '...' : daysPresent}</td>
-                                                <td className="p-3">{loadingStats ? '...' : stats.absent_days}</td>
-                                                <td className="p-3">-</td>
-                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
-                                                <td className="p-3 font-medium">KSh {(s.pay_rate || 0).toLocaleString()}</td>
-                                            </tr>
-                                        )
-                                    })}
-                                </tbody>
-                            </table>
-                        )}
-                    </Card>
-                )}
-
-                {/* Daily Staff Tab */}
-                {activeTab === 'daily' && (
-                    <Card title="Daily / Casual Staff">
-                        <p className="text-sm text-slate-500 mb-4">
-                            Pay calculated as: Full day = 1 unit × daily rate, Half day = 0.5 unit × daily rate
-                        </p>
-                        {dailyStaff.length === 0 ? (
+                        {loadingPayroll ? (
+                            <div className="text-center py-8">Loading...</div>
+                        ) : salariedPayroll.length === 0 ? (
                             <div className="text-center py-8 text-slate-500">
-                                No daily/casual staff found. Staff pay types are set in Staff module.
+                                {dateRange.start ? 'No salaried staff with attendance in this period.' : 'Select a date range to view payroll.'}
                             </div>
                         ) : (
                             <table className="w-full">
                                 <thead className="bg-slate-50">
                                     <tr>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Full Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Half Days</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Rate</th>
                                         <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {dailyStaff.map(s => {
-                                        const stats = getStats(s.id)
-                                        return (
-                                            <tr key={s.id} className="border-t">
-                                                <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
-                                                <td className="p-3">{loadingStats ? '...' : stats.full_days}</td>
-                                                <td className="p-3">{loadingStats ? '...' : stats.half_days}</td>
-                                                <td className="p-3">KSh {(s.pay_rate || 0).toLocaleString()}</td>
-                                                <td className="p-3 font-medium">KSh {loadingStats ? '...' : calculateGross(s).toLocaleString()}</td>
-                                            </tr>
-                                        )
-                                    })}
+                                    {salariedPayroll.map(record => (
+                                        <tr key={record.id} className="border-t">
+                                            <td className="p-3 font-medium">{record.name}</td>
+                                            <td className="p-3">{record.role || 'Staff'}</td>
+                                            <td className="p-3">{record.unitsWorked?.toFixed(1) || 0}</td>
+                                            <td className="p-3">KSh {(record.rate || 0).toLocaleString()}/mo</td>
+                                            <td className="p-3 font-medium">KSh {(record.grossPay || 0).toLocaleString()}</td>
+                                            <td className="p-3">
+                                                <button
+                                                    onClick={() => handlePaymentToggle(record)}
+                                                    disabled={updatingPayment[record.id]}
+                                                    className={`px-2 py-1 text-xs rounded ${record.paymentStatus === 'PAID' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}
+                                                >
+                                                    {updatingPayment[record.id] ? '...' : (record.paymentStatus || 'UNPAID')}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </Card>
+                )}
+
+                {/* Daily/Casual Staff Tab (includes External Locums) */}
+                {activeTab === 'daily' && (
+                    <Card title="Daily / Casual Staff">
+                        <p className="text-sm text-slate-500 mb-4">
+                            Includes internal casual staff + external locums. Pay = Units × Daily Rate
+                        </p>
+                        {loadingPayroll ? (
+                            <div className="text-center py-8">Loading...</div>
+                        ) : dailyPayroll.length === 0 ? (
+                            <div className="text-center py-8 text-slate-500">
+                                {dateRange.start ? 'No daily/casual staff or locums with attendance in this period.' : 'Select a date range to view payroll.'}
+                            </div>
+                        ) : (
+                            <table className="w-full">
+                                <thead className="bg-slate-50">
+                                    <tr>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Name</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Type</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
+                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {dailyPayroll.map(record => (
+                                        <tr key={record.id} className="border-t">
+                                            <td className="p-3">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-medium">{record.name}</span>
+                                                    {record.type === 'locum' && (
+                                                        <span className="px-2 py-0.5 text-xs bg-teal-100 text-teal-700 rounded-full">External</span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="p-3">{record.type === 'locum' ? 'Locum' : (record.role || 'Casual')}</td>
+                                            <td className="p-3">{record.unitsWorked?.toFixed(1) || 0}</td>
+                                            <td className="p-3">KSh {(record.rate || 0).toLocaleString()}</td>
+                                            <td className="p-3 font-medium">KSh {(record.grossPay || 0).toLocaleString()}</td>
+                                            <td className="p-3">
+                                                <button
+                                                    onClick={() => handlePaymentToggle(record)}
+                                                    disabled={updatingPayment[record.id]}
+                                                    className={`px-2 py-1 text-xs rounded ${record.paymentStatus === 'PAID' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}
+                                                >
+                                                    {updatingPayment[record.id] ? '...' : (record.paymentStatus || 'UNPAID')}
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
                                 </tbody>
                             </table>
                         )}

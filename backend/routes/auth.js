@@ -15,13 +15,15 @@ router.post('/login', async (req, res) => {
         }
 
         // Find user by email or username
+        // Explicitly specify the relationship since we have multiple FKs to clinics table
         const { data: user, error } = await supabaseAdmin
             .from('users')
-            .select('*, clinics!inner(id, name, status, plan_key, org_verification_status)')
+            .select('*, clinics!users_clinic_id_fkey(id, name, status, plan_key, org_verification_status)')
             .or(`email.eq.${identifier},username.eq.${identifier}`)
             .single()
 
         if (error || !user) {
+            console.error('Login error - user not found:', error)
             return res.status(401).json({ error: 'Invalid credentials' })
         }
 
@@ -40,6 +42,11 @@ router.post('/login', async (req, res) => {
             return res.status(403).json({ error: 'Your organization has been suspended' })
         }
 
+        // Check user active status
+        if (user.is_active === false) {
+            return res.status(403).json({ error: 'Your account has been deactivated. Please contact your administrator.' })
+        }
+
         // Update last login
         await supabaseAdmin
             .from('users')
@@ -51,6 +58,7 @@ router.post('/login', async (req, res) => {
             userId: user.id,
             email: user.email,
             role: user.role,
+            permission_role: user.permission_role,
             clinicId: user.clinic_id
         })
 
@@ -158,6 +166,7 @@ router.post('/invite/:token/accept', async (req, res) => {
             userId: user.id,
             email: user.email,
             role: user.role,
+            permission_role: user.role, // role maps to permission_role for invites
             clinicId: user.clinic_id
         })
 

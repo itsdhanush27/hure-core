@@ -11,7 +11,7 @@ router.get('/profile', authMiddleware, async (req, res) => {
 
         const { data, error } = await supabaseAdmin
             .from('users')
-            .select('*, clinic_locations(name, city), clinics(name)')
+            .select('*, clinic_locations(name, city), clinics!users_clinic_id_fkey(name)')
             .eq('id', userId)
             .single()
 
@@ -27,6 +27,8 @@ router.get('/profile', authMiddleware, async (req, res) => {
                 lastName: data.last_name,
                 phone: data.phone,
                 jobTitle: data.job_title || 'Staff',
+                role: data.role || 'Staff', // Actual role (Staff/Owner etc)
+                permission_role: data.permission_role, // Permission level for RBAC
                 location: data.clinic_locations?.name || 'Main Location',
                 hireDate: data.hire_date,
                 clinicName: data.clinics?.name || ''
@@ -56,27 +58,6 @@ router.get('/schedule', authMiddleware, async (req, res) => {
         const confirmedAssignments = (assignments || []).filter(a => a.status === 'confirmed')
         const pendingAssignments = (assignments || []).filter(a => a.status === 'pending')
 
-        // Get user's clinic
-        const { data: user } = await supabaseAdmin
-            .from('users')
-            .select('clinic_id, location_id')
-            .eq('id', userId)
-            .single()
-
-        // Get unassigned shifts (open shifts anyone can pick up)
-        const { data: openShifts } = await supabaseAdmin
-            .from('schedule_blocks')
-            .select('*, clinic_locations(name), schedule_assignments(user_id)')
-            .eq('clinic_id', user?.clinic_id)
-            .gte('date', today)
-            .limit(20)
-
-        // Filter out shifts the user has already accepted/assigned
-        const unassignedShifts = (openShifts || []).filter(shift => {
-            const userAssigned = (shift.schedule_assignments || []).some(a => a.user_id === userId)
-            return !userAssigned
-        })
-
         // Combine pending assignments (shift requests) with open shifts for "Available"
         const pendingShifts = pendingAssignments.map(a => ({
             id: a.schedule_block_id,
@@ -97,7 +78,8 @@ router.get('/schedule', authMiddleware, async (req, res) => {
                 location: a.schedule_blocks?.clinic_locations?.name,
                 status: a.status
             })),
-            available: [...pendingShifts, ...unassignedShifts]  // Pending first, then open
+            available: pendingShifts // Only show shifts explicitly assigned to this user
+
         })
     } catch (err) {
         console.error('Get schedule error:', err)

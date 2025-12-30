@@ -182,6 +182,7 @@ router.post('/verify-otp', async (req, res) => {
             userId: user.id,
             email: user.email,
             role: user.role,
+            permission_role: 'Owner', // Explicitly set for owner
             clinicId: user.clinic_id
         })
 

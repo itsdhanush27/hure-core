@@ -43,6 +43,11 @@ router.post('/', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'User ID, leave type, start date, and end date required' })
         }
 
+        // Date validation: end date must be >= start date
+        if (new Date(endDate) < new Date(startDate)) {
+            return res.status(400).json({ error: 'End date must be on or after start date' })
+        }
+
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
             .insert({

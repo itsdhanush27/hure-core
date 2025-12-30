@@ -11,6 +11,7 @@ import staffRoutes from './routes/staff.js'
 import scheduleRoutes from './routes/schedule.js'
 import attendanceRoutes from './routes/attendance.js'
 import leaveRoutes from './routes/leave.js'
+import payrollRoutes from './routes/payroll.js'
 import adminRoutes from './routes/admin.js'
 import employeeRoutes from './routes/employee.js'
 
@@ -41,6 +42,7 @@ app.use('/api/clinics/:clinicId/staff', staffRoutes)
 app.use('/api/clinics/:clinicId/schedule', scheduleRoutes)
 app.use('/api/clinics/:clinicId/attendance', attendanceRoutes)
 app.use('/api/clinics/:clinicId/leave', leaveRoutes)
+app.use('/api/clinics/:clinicId/payroll', payrollRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/employee', employeeRoutes)
 

@@ -6,10 +6,21 @@ export function generateToken(payload) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' })
 }
 
+
+// Role Definitions (Must match frontend)
+export const ROLE_PERMISSIONS = {
+    'Staff': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile'],
+    'Shift Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'payroll', 'manage_staff'],
+    'HR Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'staff_list', 'approve_leave', 'team_attendance'],
+    'Payroll Officer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_attendance', 'payroll'],
+    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'approve_leave', 'team_attendance', 'payroll', 'settings']
+}
+
 export function verifyToken(token) {
     try {
         return jwt.verify(token, JWT_SECRET)
     } catch (err) {
+        console.error('❌ Token verification error:', err.message)
         return null
     }
 }
@@ -19,6 +30,7 @@ export function authMiddleware(req, res, next) {
     const authHeader = req.headers.authorization
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        console.log('❌ authMiddleware: No token provided. Header:', authHeader)
         return res.status(401).json({ error: 'No token provided' })
     }
 
@@ -26,6 +38,7 @@ export function authMiddleware(req, res, next) {
     const decoded = verifyToken(token)
 
     if (!decoded) {
+        console.log('❌ authMiddleware: Token verification failed for token:', token.substring(0, 10) + '...')
         return res.status(401).json({ error: 'Invalid or expired token' })
     }
 
@@ -40,3 +53,31 @@ export function superadminMiddleware(req, res, next) {
     }
     next()
 }
+
+// Middleware to check for specific permission
+export function requirePermission(permission) {
+    return (req, res, next) => {
+        // Superadmin bypass
+        if (req.user?.role === 'superadmin' || req.user?.email?.includes('@hure.app')) {
+            return next()
+        }
+
+        let userRole = req.user?.permission_role || req.user?.role || 'Staff'
+
+        // Normalize role name (capitalize first letter) to match ROLE_PERMISSIONS keys
+        // e.g. 'owner' -> 'Owner', 'staff' -> 'Staff'
+        if (userRole && /^[a-z]/.test(userRole)) {
+            userRole = userRole.charAt(0).toUpperCase() + userRole.slice(1)
+        }
+
+        const permissions = ROLE_PERMISSIONS[userRole] || []
+
+        if (!permissions.includes(permission)) {
+            console.log(`❌ Access denied: User ${req.user?.userId} (${userRole}) needs permission '${permission}'`)
+            return res.status(403).json({ error: 'Access denied: Insufficient permissions' })
+        }
+        next()
+    }
+}
+
+

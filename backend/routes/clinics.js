@@ -1,8 +1,23 @@
 import express from 'express'
+import multer from 'multer'
 import { supabaseAdmin } from '../lib/supabase.js'
-import { authMiddleware } from '../lib/auth.js'
+import { authMiddleware, requirePermission } from '../lib/auth.js'
 
 const router = express.Router()
+
+// Configure multer for memory storage (files stored as Buffer)
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png']
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true)
+        } else {
+            cb(new Error('Invalid file type. Only PDF, JPG, and PNG are allowed.'))
+        }
+    }
+})
 
 // GET /api/clinics/:clinicId/settings
 router.get('/:clinicId/settings', authMiddleware, async (req, res) => {
@@ -38,7 +53,7 @@ router.get('/:clinicId/settings', authMiddleware, async (req, res) => {
 })
 
 // PATCH /api/clinics/:clinicId/settings
-router.patch('/:clinicId/settings', authMiddleware, async (req, res) => {
+router.patch('/:clinicId/settings', authMiddleware, requirePermission('manage_settings'), async (req, res) => {
     try {
         const { clinicId } = req.params
         const updates = req.body
@@ -492,7 +507,7 @@ router.get('/:clinicId/staff', authMiddleware, async (req, res) => {
 })
 
 // POST /api/clinics/:clinicId/staff - Add new staff member
-router.post('/:clinicId/staff', authMiddleware, async (req, res) => {
+router.post('/:clinicId/staff', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
     try {
         const { clinicId } = req.params
         const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate } = req.body
@@ -595,7 +610,7 @@ router.post('/:clinicId/staff', authMiddleware, async (req, res) => {
 })
 
 // PATCH /api/clinics/:clinicId/staff/:staffId/role - Update staff role
-router.patch('/:clinicId/staff/:staffId/role', authMiddleware, async (req, res) => {
+router.patch('/:clinicId/staff/:staffId/role', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
     try {
         const { clinicId, staffId } = req.params
         const { role } = req.body
@@ -625,6 +640,105 @@ router.patch('/:clinicId/staff/:staffId/role', authMiddleware, async (req, res) 
     } catch (err) {
         console.error('Role update error:', err)
         res.status(500).json({ error: 'Failed to update role' })
+    }
+})
+
+// PATCH /api/clinics/:clinicId/staff/:staffId/status - Update staff status (activate/deactivate)
+router.patch('/:clinicId/staff/:staffId/status', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
+    try {
+        const { clinicId, staffId } = req.params
+        const { isActive } = req.body
+
+        if (typeof isActive !== 'boolean') {
+            return res.status(400).json({ error: 'Status (isActive) must be a boolean' })
+        }
+
+        const { data, error } = await supabaseAdmin
+            .from('users')
+            .update({
+                is_active: isActive,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', staffId)
+            .eq('clinic_id', clinicId)
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Status update error:', error)
+            return res.status(500).json({ error: 'Failed to update status' })
+        }
+
+        console.log('✅ Status updated:', staffId, '→', isActive ? 'Active' : 'Inactive')
+        res.json({ success: true, staff: data })
+    } catch (err) {
+        console.error('Status update error:', err)
+        res.status(500).json({ error: 'Failed to update status' })
+    }
+})
+
+// ============================================
+// STAFF MANAGEMENT ENDPOINTS
+// ============================================
+
+// PATCH /api/clinics/:clinicId/staff/:staffId - Update staff member
+router.patch('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, staffId } = req.params
+        const updates = req.body
+
+        // Allowed fields to update (must match columns in users table)
+        const allowedFields = ['first_name', 'last_name', 'email', 'phone', 'job_title', 'location_id', 'employment_type', 'pay_rate', 'is_active']
+        const filteredUpdates = {}
+        for (const field of allowedFields) {
+            if (updates[field] !== undefined) {
+                filteredUpdates[field] = updates[field]
+            }
+        }
+        filteredUpdates.updated_at = new Date().toISOString()
+
+        const { data, error } = await supabaseAdmin
+            .from('users')
+            .update(filteredUpdates)
+            .eq('id', staffId)
+            .eq('clinic_id', clinicId)
+            .select('*, clinic_locations(name)')
+            .single()
+
+        if (error) {
+            console.error('Update staff error:', error)
+            return res.status(500).json({ error: 'Failed to update staff' })
+        }
+
+        console.log('✅ Staff updated:', staffId)
+        res.json({ success: true, staff: data })
+    } catch (err) {
+        console.error('Update staff error:', err)
+        res.status(500).json({ error: 'Failed to update staff' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/staff/:staffId - Delete staff member
+router.delete('/:clinicId/staff/:staffId', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
+    try {
+        const { clinicId, staffId } = req.params
+
+        const { error } = await supabaseAdmin
+            .from('users')
+            .delete()
+            .eq('id', staffId)
+            .eq('clinic_id', clinicId)
+
+        if (error) {
+            console.error('Delete staff error:', error)
+            return res.status(500).json({ error: 'Failed to delete staff' })
+        }
+
+        console.log('✅ Staff deleted:', staffId)
+        res.json({ success: true, message: 'Staff deleted successfully' })
+    } catch (err) {
+        console.error('Delete staff error:', err)
+        res.status(500).json({ error: 'Failed to delete staff' })
     }
 })
 
@@ -784,7 +898,7 @@ router.get('/:clinicId/schedules', authMiddleware, async (req, res) => {
 })
 
 // POST /api/clinics/:clinicId/schedules - Create a new schedule block (shift)
-router.post('/:clinicId/schedules', authMiddleware, async (req, res) => {
+router.post('/:clinicId/schedules', authMiddleware, requirePermission('manage_schedule'), async (req, res) => {
     try {
         const { clinicId } = req.params
         const { location_id, date, start_time, end_time, role_required, headcount_required } = req.body
@@ -861,28 +975,186 @@ router.patch('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
     }
 })
 
-// DELETE /api/clinics/:clinicId/staff/:staffId - Delete staff member
-router.delete('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
+// ============================================
+// DOCUMENT MANAGEMENT ENDPOINTS
+// ============================================
+
+// POST /api/clinics/:clinicId/documents/upload - Upload organization document to Supabase Storage
+router.post('/:clinicId/documents/upload', authMiddleware, upload.single('file'), async (req, res) => {
     try {
-        const { clinicId, staffId } = req.params
+        const { clinicId } = req.params
+        const { documentType, expiryDate } = req.body
+        const file = req.file
 
-        const { error } = await supabaseAdmin
-            .from('users')
-            .delete()
-            .eq('id', staffId)
-            .eq('clinic_id', clinicId)
-
-        if (error) {
-            console.error('Delete staff error:', error)
-            return res.status(500).json({ error: 'Failed to delete staff' })
+        if (!file) {
+            return res.status(400).json({ error: 'No file provided' })
         }
 
-        console.log('✅ Staff deleted:', staffId)
-        res.json({ success: true, message: 'Staff deleted successfully' })
+        if (!documentType) {
+            return res.status(400).json({ error: 'Document type is required' })
+        }
+
+        const validTypes = ['business_reg', 'facility_license']
+        if (!validTypes.includes(documentType)) {
+            return res.status(400).json({ error: 'Invalid document type' })
+        }
+
+        // Generate unique filename with original extension
+        const fileExt = file.originalname.split('.').pop()
+        const fileName = `${clinicId}/${documentType}_${Date.now()}.${fileExt}`
+
+        // Upload to Supabase Storage
+        const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
+            .from('org-documents')
+            .upload(fileName, file.buffer, {
+                contentType: file.mimetype,
+                upsert: true
+            })
+
+        if (uploadError) {
+            console.error('Supabase Storage upload error:', uploadError)
+            return res.status(500).json({ error: 'Failed to upload to storage: ' + uploadError.message })
+        }
+
+        // Get public URL for the uploaded file
+        const { data: urlData } = supabaseAdmin.storage
+            .from('org-documents')
+            .getPublicUrl(fileName)
+
+        const documentUrl = urlData?.publicUrl || fileName
+
+        // Build update object
+        const updates = {
+            updated_at: new Date().toISOString()
+        }
+
+        if (documentType === 'business_reg') {
+            updates.business_reg_doc = documentUrl
+            if (expiryDate) updates.business_reg_expiry = expiryDate
+        } else if (documentType === 'facility_license') {
+            updates.facility_license_doc = documentUrl
+            if (expiryDate) updates.facility_license_expiry = expiryDate
+        }
+
+        // Update clinic record with document URL
+        const { data, error } = await supabaseAdmin
+            .from('clinics')
+            .update(updates)
+            .eq('id', clinicId)
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Database update error:', error)
+            return res.status(500).json({ error: 'Failed to save document reference' })
+        }
+
+        console.log('✅ Document uploaded to Supabase Storage:', fileName)
+        res.json({ success: true, clinic: data, filePath: fileName })
     } catch (err) {
-        console.error('Delete staff error:', err)
-        res.status(500).json({ error: 'Failed to delete staff' })
+        console.error('Document upload error:', err)
+        res.status(500).json({ error: 'Failed to upload document: ' + err.message })
     }
 })
 
+// PATCH /api/clinics/:clinicId/verification/submit - Submit organization for verification
+router.patch('/:clinicId/verification/submit', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+
+        // Check if required documents are uploaded
+        const { data: clinic } = await supabaseAdmin
+            .from('clinics')
+            .select('business_reg_doc, facility_license_doc, org_verification_status')
+            .eq('id', clinicId)
+            .single()
+
+        if (!clinic) {
+            return res.status(404).json({ error: 'Clinic not found' })
+        }
+
+        if (!clinic.business_reg_doc || !clinic.facility_license_doc) {
+            return res.status(400).json({ error: 'Please upload both required documents before submitting' })
+        }
+
+        const { data, error } = await supabaseAdmin
+            .from('clinics')
+            .update({
+                org_verification_status: 'under_review',
+                verification_submitted_at: new Date().toISOString(),
+                verification_rejection_reason: null, // Clear previous rejection
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', clinicId)
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Verification submit error:', error)
+            return res.status(500).json({ error: 'Failed to submit for verification' })
+        }
+
+        console.log('✅ Clinic submitted for verification:', clinicId)
+        res.json({ success: true, clinic: data })
+    } catch (err) {
+        console.error('Verification submit error:', err)
+        res.status(500).json({ error: 'Failed to submit for verification' })
+    }
+})
+
+// PATCH /api/clinics/:clinicId/verification/review - Admin approve/reject organization (SuperAdmin only)
+router.patch('/:clinicId/verification/review', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+        const { status, rejectionReason } = req.body
+
+        // Only superadmin can review
+        if (req.user?.role !== 'superadmin' && !req.user?.email?.includes('@hure.app')) {
+            return res.status(403).json({ error: 'Only SuperAdmin can review verifications' })
+        }
+
+        if (!['approved', 'rejected'].includes(status)) {
+            return res.status(400).json({ error: 'Status must be approved or rejected' })
+        }
+
+        if (status === 'rejected' && !rejectionReason) {
+            return res.status(400).json({ error: 'Rejection reason is required when rejecting' })
+        }
+
+        const updates = {
+            org_verification_status: status,
+            verification_reviewed_at: new Date().toISOString(),
+            verification_reviewed_by: req.user.userId,
+            updated_at: new Date().toISOString()
+        }
+
+        if (status === 'rejected') {
+            updates.verification_rejection_reason = rejectionReason
+        } else {
+            updates.verification_rejection_reason = null
+        }
+
+        const { data, error } = await supabaseAdmin
+            .from('clinics')
+            .update(updates)
+            .eq('id', clinicId)
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Verification review error:', error)
+            return res.status(500).json({ error: 'Failed to review verification' })
+        }
+
+        console.log(`✅ Clinic ${status}:`, clinicId, 'by', req.user.email)
+        res.json({ success: true, clinic: data })
+    } catch (err) {
+        console.error('Verification review error:', err)
+        res.status(500).json({ error: 'Failed to review verification' })
+    }
+})
+
+
+
 export default router
+

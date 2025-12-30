@@ -8,36 +8,129 @@ const router = express.Router({ mergeParams: true })
 router.get('/', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
-        const { locationId, startDate, endDate } = req.query
+        const { locationId, startDate, endDate, includeLocums } = req.query
 
-        let query = supabaseAdmin
+        // Fetch staff attendance (exclude locums)
+        let staffQuery = supabaseAdmin
             .from('attendance')
             .select('*, users(first_name, last_name, job_title), clinic_locations(name)')
             .eq('clinic_id', clinicId)
+            .is('external_locum_id', null) // Only staff records
             .order('date', { ascending: false })
 
         if (locationId && locationId !== 'all') {
-            query = query.eq('location_id', locationId)
+            staffQuery = staffQuery.eq('location_id', locationId)
         }
 
         if (startDate) {
-            query = query.gte('date', startDate)
+            staffQuery = staffQuery.gte('date', startDate)
         }
 
         if (endDate) {
-            query = query.lte('date', endDate)
+            staffQuery = staffQuery.lte('date', endDate)
         }
 
-        const { data, error } = await query
+        const { data: staffData, error: staffError } = await staffQuery
 
-        if (error) {
+        if (staffError) {
             return res.status(500).json({ error: 'Failed to fetch attendance' })
         }
 
-        res.json({ data })
+        let allData = (staffData || []).map(a => ({ ...a, type: 'staff' }))
+
+        // Fetch locum attendance if requested
+        if (includeLocums === 'true') {
+            let locumQuery = supabaseAdmin
+                .from('attendance')
+                .select('*, external_locums(name, role, phone), clinic_locations(name)')
+                .eq('clinic_id', clinicId)
+                .not('external_locum_id', 'is', null) // Only locum records
+                .order('date', { ascending: false })
+
+            if (locationId && locationId !== 'all') {
+                locumQuery = locumQuery.eq('location_id', locationId)
+            }
+            if (startDate) {
+                locumQuery = locumQuery.gte('date', startDate)
+            }
+            if (endDate) {
+                locumQuery = locumQuery.lte('date', endDate)
+            }
+
+            const { data: locumData, error: locumError } = await locumQuery
+
+            if (!locumError && locumData) {
+                const locumRecords = locumData.map(a => ({
+                    ...a,
+                    type: 'locum',
+                    locum_name: a.external_locums?.name || 'External Locum',
+                    locum_role: a.external_locums?.role || 'Locum'
+                }))
+                allData = [...allData, ...locumRecords]
+            }
+        }
+
+        res.json({ data: allData })
     } catch (err) {
         console.error('Get attendance error:', err)
         res.status(500).json({ error: 'Failed to fetch attendance' })
+    }
+})
+
+// POST /api/clinics/:clinicId/attendance/locum - Record locum attendance
+router.post('/locum', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+        const { externalLocumId, date, status, hoursWorked } = req.body
+
+        if (!externalLocumId || !date || !status) {
+            return res.status(400).json({ error: 'Locum ID, date, and status required' })
+        }
+
+        // Get locum details including shift for location and duration
+        const { data: locum } = await supabaseAdmin
+            .from('external_locums')
+            .select('*, schedule_blocks(start_time, end_time, location_id)')
+            .eq('id', externalLocumId)
+            .single()
+
+        if (!locum) {
+            return res.status(404).json({ error: 'Locum not found' })
+        }
+
+        // Calculate default hours from shift if not provided
+        let hours = hoursWorked
+        if (!hours && locum?.schedule_blocks) {
+            const start = new Date(`2000-01-01T${locum.schedule_blocks.start_time}`)
+            const end = new Date(`2000-01-01T${locum.schedule_blocks.end_time}`)
+            hours = (end - start) / (1000 * 60 * 60)
+        }
+
+        const { data, error } = await supabaseAdmin
+            .from('attendance')
+            .insert({
+                clinic_id: clinicId,
+                location_id: locum.schedule_blocks?.location_id, // Get from shift
+                external_locum_id: externalLocumId,
+                date,
+                attendance_type: 'confirmation',
+                locum_status: status, // 'WORKED' | 'NO_SHOW'
+                total_hours: status === 'WORKED' ? (hours || 8) : 0,
+                status: status === 'WORKED' ? 'present_full' : 'absent'
+            })
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Record locum attendance error:', error)
+            return res.status(500).json({ error: 'Failed to record locum attendance' })
+        }
+
+        console.log('✅ Locum attendance recorded:', externalLocumId, status)
+        res.json({ success: true, data })
+    } catch (err) {
+        console.error('Record locum attendance error:', err)
+        res.status(500).json({ error: 'Failed to record locum attendance' })
     }
 })
 
