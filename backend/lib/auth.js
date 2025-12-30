@@ -13,7 +13,8 @@ export const ROLE_PERMISSIONS = {
     'Shift Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'payroll', 'manage_staff'],
     'HR Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance'],
     'Payroll Officer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_attendance', 'payroll'],
-    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings']
+    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings'],
+    'Employer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings']
 }
 
 export function verifyToken(token) {
@@ -74,7 +75,9 @@ export function requirePermission(permission) {
 
         if (!permissions.includes(permission)) {
             console.log(`❌ Access denied: User ${req.user?.userId} (${userRole}) needs permission '${permission}'`)
-            return res.status(403).json({ error: 'Access denied: Insufficient permissions' })
+            return res.status(403).json({
+                error: `Access denied: Insufficient permissions. Role '${userRole}' cannot '${permission}'.`
+            })
         }
         next()
     }
