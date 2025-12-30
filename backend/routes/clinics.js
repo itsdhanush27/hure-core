@@ -92,27 +92,18 @@ router.patch('/:clinicId/settings', authMiddleware, requirePermission('manage_se
 })
 
 // DELETE /api/clinics/:clinicId - Delete organization
-router.delete('/:clinicId', authMiddleware, async (req, res) => {
-    try {
-        const { clinicId } = req.params
-
-        // Delete the clinic (cascade will delete related data)
-        const { error } = await supabaseAdmin
-            .from('clinics')
-            .delete()
-            .eq('id', clinicId)
-
-        if (error) {
-            console.error('Delete clinic error:', error)
-            return res.status(500).json({ error: 'Failed to delete organization' })
-        }
-
-        res.json({ success: true, message: 'Organization deleted successfully' })
-    } catch (err) {
-        console.error('Delete clinic error:', err)
-        res.status(500).json({ error: 'Failed to delete organization' })
-    }
-})
+// DELETE /api/clinics/:clinicId - Delete clinic (DISABLED favor of deactivate)
+// router.delete('/:clinicId', authMiddleware, async (req, res) => {
+//     try {
+//         const { clinicId } = req.params
+//         // const { error } = await supabaseAdmin.from('clinics').delete().eq('id', clinicId)
+//         // if (error) return res.status(500).json({ error: 'Failed' })
+//         // res.json({ success: true })
+//         res.status(405).json({ error: 'Start deactivation instead' })
+//     } catch (err) {
+//         res.status(500).json({ error: 'Failed' })
+//     }
+// })
 
 // POST /api/clinics/:clinicId/verification - Submit for org verification
 router.post('/:clinicId/verification', authMiddleware, async (req, res) => {
@@ -374,7 +365,7 @@ router.get('/:clinicId/leave', authMiddleware, async (req, res) => {
 
         let query = supabaseAdmin
             .from('leave_requests')
-            .select('*, user:user_id(first_name, last_name, job_title)')
+            .select('*, user:user_id(first_name, last_name, job_title), reviewer:reviewed_by(first_name, last_name)')
             .eq('clinic_id', clinicId)
 
         if (status) query = query.eq('status', status)
@@ -506,241 +497,7 @@ router.get('/:clinicId/staff', authMiddleware, async (req, res) => {
     }
 })
 
-// POST /api/clinics/:clinicId/staff - Add new staff member
-router.post('/:clinicId/staff', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
-    try {
-        const { clinicId } = req.params
-        const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate } = req.body
-
-        if (!first_name || !last_name || !email || !job_title) {
-            return res.status(400).json({ error: 'First name, last name, email, and job title are required' })
-        }
-
-        // Check if email exists
-        const { data: existing, error: existingError } = await supabaseAdmin
-            .from('users')
-            .select('id')
-            .eq('email', email)
-            .maybeSingle()
-
-        console.log('📧 Email check:', email, 'Existing:', existing)
-
-        if (existing) {
-            return res.status(400).json({ error: 'A user with this email already exists' })
-        }
-
-        // Generate invite token
-        const crypto = await import('crypto')
-        const inviteToken = crypto.randomBytes(32).toString('hex')
-
-        // Determine pay_type based on employment_type
-        const payType = employment_type === 'casual' ? 'daily' : 'salary'
-
-        // Create staff member WITHOUT password (they'll set it via invite)
-        const { data, error } = await supabaseAdmin
-            .from('users')
-            .insert({
-                clinic_id: clinicId,
-                first_name,
-                last_name,
-                email,
-                phone,
-                job_title,
-                location_id: location_id || null,
-                pay_rate: pay_rate ? parseFloat(pay_rate) : null,
-                pay_type: payType,
-                role: 'staff',
-                account_type: 'staff',
-                password_hash: null,  // No password yet - will be set via invite
-                is_active: false,     // Not active until they accept invite
-                invite_token: inviteToken,
-                invite_status: 'pending'
-            })
-            .select('*, clinic_locations(name)')
-            .single()
-
-        if (error) {
-            console.error('Staff create error:', error)
-            return res.status(500).json({ error: error.message || 'Failed to create staff member' })
-        }
-
-        // Get clinic name for email
-        const { data: clinic } = await supabaseAdmin
-            .from('clinics')
-            .select('name')
-            .eq('id', clinicId)
-            .single()
-
-        // Send invite email via Brevo
-        const inviteLink = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/invite?token=${inviteToken}`
-
-        try {
-            const { sendEmail } = await import('../lib/email.js')
-            await sendEmail({
-                to: email,
-                subject: `You're invited to join ${clinic?.name || 'HURE'}`,
-                htmlContent: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #0d9488;">Welcome to HURE!</h2>
-                        <p>Hi ${first_name},</p>
-                        <p>You've been invited to join <strong>${clinic?.name || 'the organization'}</strong> as a <strong>${job_title}</strong>.</p>
-                        <p>Click the button below to create your account and set your password:</p>
-                        <div style="text-align: center; margin: 30px 0;">
-                            <a href="${inviteLink}" style="background-color: #0d9488; color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                                Accept Invitation
-                            </a>
-                        </div>
-                        <p style="color: #666; font-size: 12px;">Or copy this link: ${inviteLink}</p>
-                        <p style="color: #666; font-size: 12px;">This invite link is valid for 7 days.</p>
-                    </div>
-                `,
-                textContent: `Hi ${first_name}, You've been invited to join ${clinic?.name}. Accept your invitation here: ${inviteLink}`
-            })
-            console.log('✅ Invite email sent to:', email)
-        } catch (emailErr) {
-            console.error('❌ Failed to send invite email:', emailErr)
-            // Don't fail the request if email fails
-        }
-
-        res.json({ success: true, staff: data, inviteLink })
-    } catch (err) {
-        console.error('Staff create error:', err)
-        res.status(500).json({ error: 'Failed to create staff member' })
-    }
-})
-
-// PATCH /api/clinics/:clinicId/staff/:staffId/role - Update staff role
-router.patch('/:clinicId/staff/:staffId/role', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
-    try {
-        const { clinicId, staffId } = req.params
-        const { role } = req.body
-
-        if (!role) {
-            return res.status(400).json({ error: 'Role is required' })
-        }
-
-        const { data, error } = await supabaseAdmin
-            .from('users')
-            .update({
-                permission_role: role,  // Use separate field for access level
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', staffId)
-            .eq('clinic_id', clinicId)
-            .select()
-            .single()
-
-        if (error) {
-            console.error('Role update error:', error)
-            return res.status(500).json({ error: 'Failed to update role' })
-        }
-
-        console.log('✅ Role updated:', staffId, '→', role)
-        res.json({ success: true, staff: data })
-    } catch (err) {
-        console.error('Role update error:', err)
-        res.status(500).json({ error: 'Failed to update role' })
-    }
-})
-
-// PATCH /api/clinics/:clinicId/staff/:staffId/status - Update staff status (activate/deactivate)
-router.patch('/:clinicId/staff/:staffId/status', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
-    try {
-        const { clinicId, staffId } = req.params
-        const { isActive } = req.body
-
-        if (typeof isActive !== 'boolean') {
-            return res.status(400).json({ error: 'Status (isActive) must be a boolean' })
-        }
-
-        const { data, error } = await supabaseAdmin
-            .from('users')
-            .update({
-                is_active: isActive,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', staffId)
-            .eq('clinic_id', clinicId)
-            .select()
-            .single()
-
-        if (error) {
-            console.error('Status update error:', error)
-            return res.status(500).json({ error: 'Failed to update status' })
-        }
-
-        console.log('✅ Status updated:', staffId, '→', isActive ? 'Active' : 'Inactive')
-        res.json({ success: true, staff: data })
-    } catch (err) {
-        console.error('Status update error:', err)
-        res.status(500).json({ error: 'Failed to update status' })
-    }
-})
-
-// ============================================
-// STAFF MANAGEMENT ENDPOINTS
-// ============================================
-
-// PATCH /api/clinics/:clinicId/staff/:staffId - Update staff member
-router.patch('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
-    try {
-        const { clinicId, staffId } = req.params
-        const updates = req.body
-
-        // Allowed fields to update (must match columns in users table)
-        const allowedFields = ['first_name', 'last_name', 'email', 'phone', 'job_title', 'location_id', 'employment_type', 'pay_rate', 'is_active']
-        const filteredUpdates = {}
-        for (const field of allowedFields) {
-            if (updates[field] !== undefined) {
-                filteredUpdates[field] = updates[field]
-            }
-        }
-        filteredUpdates.updated_at = new Date().toISOString()
-
-        const { data, error } = await supabaseAdmin
-            .from('users')
-            .update(filteredUpdates)
-            .eq('id', staffId)
-            .eq('clinic_id', clinicId)
-            .select('*, clinic_locations(name)')
-            .single()
-
-        if (error) {
-            console.error('Update staff error:', error)
-            return res.status(500).json({ error: 'Failed to update staff' })
-        }
-
-        console.log('✅ Staff updated:', staffId)
-        res.json({ success: true, staff: data })
-    } catch (err) {
-        console.error('Update staff error:', err)
-        res.status(500).json({ error: 'Failed to update staff' })
-    }
-})
-
-// DELETE /api/clinics/:clinicId/staff/:staffId - Delete staff member
-router.delete('/:clinicId/staff/:staffId', authMiddleware, requirePermission('manage_staff'), async (req, res) => {
-    try {
-        const { clinicId, staffId } = req.params
-
-        const { error } = await supabaseAdmin
-            .from('users')
-            .delete()
-            .eq('id', staffId)
-            .eq('clinic_id', clinicId)
-
-        if (error) {
-            console.error('Delete staff error:', error)
-            return res.status(500).json({ error: 'Failed to delete staff' })
-        }
-
-        console.log('✅ Staff deleted:', staffId)
-        res.json({ success: true, message: 'Staff deleted successfully' })
-    } catch (err) {
-        console.error('Delete staff error:', err)
-        res.status(500).json({ error: 'Failed to delete staff' })
-    }
-})
+// Staff routes have been moved to routes/staff.js to prevent conflicts
 
 // ============================================
 // LOCATION ENDPOINTS
@@ -794,6 +551,7 @@ router.post('/:clinicId/locations', authMiddleware, async (req, res) => {
                 name,
                 city,
                 address,
+                phone: req.body.phone,
                 is_primary: is_primary || false,
                 facility_verification_status: 'draft'
             })
@@ -809,6 +567,99 @@ router.post('/:clinicId/locations', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('Location create error:', err)
         res.status(500).json({ error: 'Failed to create location' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/locations/:locationId - Delete location
+router.delete('/:clinicId/locations/:locationId', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, locationId } = req.params
+
+        // 1. Check for assigned staff
+        const { count: staffCount, error: staffError } = await supabaseAdmin
+            .from('users')
+            .select('id', { count: 'exact', head: true })
+            .eq('location_id', locationId)
+
+        if (staffError && staffError.code !== 'PGRST100') { // Ignore column not found for a moment if we guessed wrong, but real error should be handled
+            console.error('Check staff error:', staffError)
+        }
+
+        if (staffCount > 0) {
+            return res.status(400).json({ error: `Cannot delete location. ${staffCount} staff member(s) are assigned to this location. Please reassign them first.` })
+        }
+
+        // 2. Check for schedule blocks (future or past)
+        const { count: scheduleCount, error: scheduleError } = await supabaseAdmin
+            .from('schedule_blocks')
+            .select('id', { count: 'exact', head: true })
+            .eq('location_id', locationId)
+
+        if (scheduleCount > 0) {
+            return res.status(400).json({ error: `Cannot delete location. There are ${scheduleCount} schedule blocks associated with this location. Please delete the schedules first.` })
+        }
+
+        // 3. Delete the location
+        const { error } = await supabaseAdmin
+            .from('clinic_locations')
+            .delete()
+            .eq('id', locationId)
+            .eq('clinic_id', clinicId)
+
+        if (error) {
+            console.error('Location delete error:', error)
+            // Fallback for other FK violations we missed
+            if (error.code === '23503') {
+                return res.status(400).json({ error: 'Cannot delete location because it is referenced by other records (e.g. shifts or staff).' })
+            }
+            return res.status(500).json({ error: 'Failed to delete location' })
+        }
+
+        res.json({ success: true, message: 'Location deleted successfully' })
+    } catch (err) {
+        console.error('Location delete error:', err)
+        res.status(500).json({ error: 'Failed to delete location' })
+    }
+})
+
+// POST /api/clinics/:clinicId/deactivate - Deactivate organization
+router.post('/:clinicId/deactivate', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+
+        console.log('🛑 Deactivating organization:', clinicId)
+
+        // 1. Update clinic status
+        const { error: clinicError } = await supabaseAdmin
+            .from('clinics')
+            .update({
+                status: 'inactive',
+                plan_status: 'cancelled', // or 'paused'
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', clinicId)
+
+        if (clinicError) {
+            console.error('Clinic update error:', clinicError)
+            throw clinicError
+        }
+
+        // 2. Suspend all users
+        const { error: usersError } = await supabaseAdmin
+            .from('users')
+            .update({ is_active: false })
+            .eq('clinic_id', clinicId)
+
+        if (usersError) {
+            console.error('Users suspend error:', usersError)
+            throw usersError
+        }
+
+        console.log('✅ Organization deactivated successfully')
+        res.json({ success: true, message: 'Organization deactivated successfully' })
+    } catch (err) {
+        console.error('Deactivate error:', err)
+        res.status(500).json({ error: 'Failed to deactivate organization' })
     }
 })
 

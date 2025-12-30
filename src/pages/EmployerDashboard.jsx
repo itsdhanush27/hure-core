@@ -153,7 +153,7 @@ export default function EmployerDashboard() {
                     ...prev,
                     staff: staffData.data || [],
                     staffCount: (staffData.data || []).filter(s =>
-                        s.role !== 'superadmin' &&
+                        s && s.role !== 'superadmin' &&
                         !s.email?.includes('@hure.app') &&
                         s.is_active !== false
                     ).length
@@ -352,10 +352,10 @@ export default function EmployerDashboard() {
                 <div className="p-4 border-b border-slate-700">
                     <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full bg-primary-600 flex items-center justify-center font-bold">
-                            {user?.username?.[0]?.toUpperCase() || 'U'}
+                            {(user?.username === 'superadmin' ? 'E' : user?.username?.[0]?.toUpperCase()) || 'E'}
                         </div>
                         <div>
-                            <div className="font-medium">{user?.username || 'Owner'}</div>
+                            <div className="font-medium">{user?.username === 'superadmin' ? 'Employer' : (user?.username || 'Employer')}</div>
                             <div className="text-xs text-slate-400">
                                 {org.locations.length > 1 ? 'All Locations' : org.locations[0]?.name || 'Main Location'}
                             </div>
@@ -531,6 +531,7 @@ export default function EmployerDashboard() {
         })
         const [adding, setAdding] = useState(false)
         const [updating, setUpdating] = useState(false)
+        const [staffTab, setStaffTab] = useState('all') // 'all', 'salaried', 'casual'
         const canAddStaff = org.staffCount < limits.staff
 
         const handleAddStaff = async (e) => {
@@ -701,7 +702,7 @@ export default function EmployerDashboard() {
                 <div className="flex items-center justify-between">
                     <div>
                         <h1 className="text-xl font-bold">Staff Management</h1>
-                        <p className="text-slate-500 text-sm">{org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false).length} of {limits.staff} staff used (Active only)</p>
+                        <p className="text-slate-500 text-sm">{org.staff.filter(s => s && s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false).length} of {limits.staff} staff used (Active only)</p>
                     </div>
                     <button
                         onClick={() => setShowAddForm(true)}
@@ -852,6 +853,28 @@ export default function EmployerDashboard() {
                 }
 
                 <Card title="Staff Members">
+                    {/* Staff Type Tabs */}
+                    <div className="flex gap-2 border-b mb-4 px-2">
+                        <button
+                            onClick={() => setStaffTab('all')}
+                            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${staffTab === 'all' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        >
+                            All Staff
+                        </button>
+                        <button
+                            onClick={() => setStaffTab('salaried')}
+                            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${staffTab === 'salaried' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Salaried
+                        </button>
+                        <button
+                            onClick={() => setStaffTab('casual')}
+                            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${staffTab === 'casual' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                        >
+                            Daily / Casual
+                        </button>
+                    </div>
+
                     {org.staff.length === 0 ? (
                         <div className="text-center py-12 text-slate-500">
                             <div className="text-4xl mb-4">👥</div>
@@ -863,7 +886,7 @@ export default function EmployerDashboard() {
                                 <tr>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Name</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Job Title</th>
-                                    <th className="text-left p-3 text-sm font-medium text-slate-600">System Role</th>
+                                    <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Email</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Location</th>
                                     <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
@@ -872,23 +895,32 @@ export default function EmployerDashboard() {
                             </thead>
                             <tbody>
                                 {org.staff
-                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                    .filter(s => s && s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
+                                    .filter(s => {
+                                        if (staffTab === 'all') return true
+                                        const type = (s.employment_type || 'full-time').toLowerCase()
+                                        if (staffTab === 'salaried') return ['full-time', 'part-time', 'salaried'].includes(type)
+                                        if (staffTab === 'casual') return ['daily', 'casual', 'contract'].includes(type)
+                                        return true
+                                    })
                                     .map(s => {
-                                        // Determine system role (from field or infer from role)
-                                        const sysRole = s.system_role || (s.role === 'Owner' ? 'OWNER' :
-                                            ['Shift Manager', 'HR Manager', 'Payroll Officer'].includes(s.role) ? 'ADMIN' : 'EMPLOYEE')
-                                        const roleColors = {
-                                            'OWNER': 'bg-amber-100 text-amber-700 border border-amber-200',
-                                            'ADMIN': 'bg-blue-100 text-blue-700 border border-blue-200',
-                                            'EMPLOYEE': 'bg-slate-100 text-slate-600'
-                                        }
+                                        // Determine badge color based on role
+                                        // If permission_role is 'Staff' (or missing and defaults to Staff), it's Gray.
+                                        // Any other role (Owner, Managers, etc.) is Blue.
+                                        const roleName = s.permission_role || 'Staff'
+                                        const isStaff = roleName === 'Staff' || roleName === 'staff'
+
+                                        const badgeClass = isStaff
+                                            ? 'bg-gray-100 text-gray-600 border border-gray-200'
+                                            : 'bg-blue-100 text-blue-800 border border-blue-200'
+
                                         return (
                                             <tr key={s.id} className="border-t hover:bg-slate-50">
                                                 <td className="p-3 font-medium">{s.first_name} {s.last_name}</td>
                                                 <td className="p-3">{s.job_title || '-'}</td>
                                                 <td className="p-3">
-                                                    <span className={`px-2 py-1 rounded text-xs font-medium ${roleColors[sysRole] || roleColors.EMPLOYEE}`}>
-                                                        {sysRole}
+                                                    <span className={`px-2 py-1 rounded text-xs font-medium ${badgeClass}`}>
+                                                        {roleName}
                                                     </span>
                                                 </td>
                                                 <td className="p-3 text-sm text-slate-500">{s.email}</td>
@@ -912,7 +944,7 @@ export default function EmployerDashboard() {
                                                         >
                                                             Edit
                                                         </button>
-                                                        {sysRole !== 'OWNER' && (
+                                                        {s.role !== 'Owner' && (
                                                             <button
                                                                 onClick={() => handleToggleStatus(s.id, s.is_active !== false, `${s.first_name} ${s.last_name}`)}
                                                                 className={`text-sm font-medium ${s.is_active !== false ? 'text-amber-600 hover:text-amber-700' : 'text-green-600 hover:text-green-700'}`}
@@ -1338,40 +1370,7 @@ export default function EmployerDashboard() {
                                 </div>
                             </div>
 
-                            {/* Facility License Document */}
-                            <div>
-                                <div className="flex items-center justify-between mb-1">
-                                    <label className="block text-sm font-medium text-slate-700">Facility Operating License *</label>
-                                    {getExpiryBadge(org.facility_license_expiry)}
-                                </div>
-                                <div className="flex gap-2">
-                                    <input
-                                        type="file"
-                                        accept=".pdf,.jpg,.jpeg,.png"
-                                        onChange={(e) => handleDocumentUpload(e, 'facility_license')}
-                                        className="hidden"
-                                        id="facility-license-upload"
-                                        disabled={org.org_verification_status === 'approved' || uploading}
-                                    />
-                                    <label
-                                        htmlFor="facility-license-upload"
-                                        className={`flex-1 px-3 py-2 border rounded-lg cursor-pointer text-sm ${org.org_verification_status === 'approved' ? 'bg-slate-100 cursor-not-allowed' : 'hover:bg-slate-50'
-                                            }`}
-                                    >
-                                        {org.facility_license_doc ? '📄 ' + (orgForm.facility_license_doc || 'Document uploaded') : '📎 Upload PDF, JPG, or PNG'}
-                                    </label>
-                                </div>
-                                <div className="mt-1">
-                                    <label className="block text-xs text-slate-600 mb-1">Expiry Date (if applicable)</label>
-                                    <input
-                                        type="date"
-                                        value={orgForm.facility_license_expiry}
-                                        onChange={(e) => setOrgForm({ ...orgForm, facility_license_expiry: e.target.value })}
-                                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                                        disabled={org.org_verification_status === 'approved'}
-                                    />
-                                </div>
-                            </div>
+
 
                             {/* Submit/Resubmit Button */}
                             {org.org_verification_status === 'approved' ? (
@@ -1457,6 +1456,40 @@ export default function EmployerDashboard() {
                                         required
                                     />
                                 </div>
+                                {/* Facility Operating License (Moved) */}
+                                <div>
+                                    <div className="flex items-center justify-between mb-1">
+                                        <label className="block text-sm font-medium text-slate-700">Facility Operating License *</label>
+                                        {getExpiryBadge(org.facility_license_expiry)}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="file"
+                                            accept=".pdf,.jpg,.jpeg,.png"
+                                            onChange={(e) => handleDocumentUpload(e, 'facility_license')}
+                                            className="hidden"
+                                            id="facility-license-upload"
+                                            disabled={org.org_verification_status === 'approved' || uploading}
+                                        />
+                                        <label
+                                            htmlFor="facility-license-upload"
+                                            className={`flex-1 px-3 py-2 border rounded-lg cursor-pointer text-sm ${org.org_verification_status === 'approved' ? 'bg-slate-100 cursor-not-allowed' : 'hover:bg-slate-50'
+                                                }`}
+                                        >
+                                            {org.facility_license_doc ? '📄 ' + (orgForm.facility_license_doc || 'Document uploaded') : '📎 Upload PDF, JPG, or PNG'}
+                                        </label>
+                                    </div>
+                                    <div className="mt-1">
+                                        <label className="block text-xs text-slate-600 mb-1">Expiry Date (if applicable)</label>
+                                        <input
+                                            type="date"
+                                            value={orgForm.facility_license_expiry}
+                                            onChange={(e) => setOrgForm({ ...orgForm, facility_license_expiry: e.target.value })}
+                                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+                                            disabled={org.org_verification_status === 'approved'}
+                                        />
+                                    </div>
+                                </div>
                                 <button
                                     type="submit"
                                     disabled={submitting}
@@ -1498,7 +1531,7 @@ export default function EmployerDashboard() {
 
     const LocationsView = () => {
         const [showAddForm, setShowAddForm] = useState(false)
-        const [newLocation, setNewLocation] = useState({ name: '', city: '', address: '', is_primary: false })
+        const [newLocation, setNewLocation] = useState({ name: '', city: '', address: '', phone: '', is_primary: false })
         const [adding, setAdding] = useState(false)
         const canAddLocation = org.locationCount < limits.locations
 
@@ -1523,7 +1556,7 @@ export default function EmployerDashboard() {
                         locationCount: prev.locationCount + 1
                     }))
                     setShowAddForm(false)
-                    setNewLocation({ name: '', city: '', address: '', is_primary: false })
+                    setNewLocation({ name: '', city: '', address: '', phone: '', is_primary: false })
                 } else {
                     const err = await res.json()
                     alert(err.error || 'Failed to add location')
@@ -1532,6 +1565,32 @@ export default function EmployerDashboard() {
                 console.error('Add location error:', err)
             } finally {
                 setAdding(false)
+            }
+        }
+
+        const handleDeleteLocation = async (locationId) => {
+            if (!window.confirm('Are you sure you want to delete this location? This action cannot be undone.')) return
+
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/locations/${locationId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
+                })
+
+                if (res.ok) {
+                    setOrg(prev => ({
+                        ...prev,
+                        locations: prev.locations.filter(l => l.id !== locationId),
+                        locationCount: prev.locationCount - 1
+                    }))
+                } else {
+                    const data = await res.json()
+                    alert(data.error || 'Failed to delete location')
+                }
+            } catch (err) {
+                console.error('Delete location error:', err)
+                alert('Failed to delete location. Please check your network connection.')
             }
         }
 
@@ -1582,15 +1641,27 @@ export default function EmployerDashboard() {
                                     />
                                 </div>
                             </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Full Address</label>
-                                <input
-                                    type="text"
-                                    value={newLocation.address}
-                                    onChange={(e) => setNewLocation({ ...newLocation, address: e.target.value })}
-                                    placeholder="Street address, building, etc."
-                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
-                                />
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Full Address</label>
+                                    <input
+                                        type="text"
+                                        value={newLocation.address}
+                                        onChange={(e) => setNewLocation({ ...newLocation, address: e.target.value })}
+                                        placeholder="Street address, building, etc."
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Phone Number</label>
+                                    <input
+                                        type="text"
+                                        value={newLocation.phone}
+                                        onChange={(e) => setNewLocation({ ...newLocation, phone: e.target.value })}
+                                        placeholder="e.g. +254..."
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                    />
+                                </div>
                             </div>
                             <label className="flex items-center gap-2">
                                 <input
@@ -1619,7 +1690,8 @@ export default function EmployerDashboard() {
                             </div>
                         </form>
                     </Card>
-                )}
+                )
+                }
 
                 {/* Usage bar */}
                 <Card>
@@ -1652,20 +1724,36 @@ export default function EmployerDashboard() {
                                                 <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">Primary</span>
                                             )}
                                         </div>
-                                        <div className="text-sm text-slate-500">{loc.city || 'No city set'}{loc.address ? ` · ${loc.address}` : ''}</div>
+                                        <div className="text-sm text-slate-500">
+                                            {loc.city || 'No city set'}
+                                            {loc.address ? ` · ${loc.address}` : ''}
+                                            {loc.phone ? ` · 📞 ${loc.phone}` : ''}
+                                        </div>
                                     </div>
-                                    <span className={`px-2 py-1 rounded text-xs ${loc.facility_verification_status === 'approved' ? 'bg-green-100 text-green-700' :
-                                        loc.facility_verification_status === 'pending_review' ? 'bg-amber-100 text-amber-700' :
-                                            'bg-slate-100 text-slate-600'
-                                        }`}>
-                                        {loc.facility_verification_status || 'Draft'}
-                                    </span>
+                                    <div className="flex items-center gap-4">
+                                        <span className={`px-2 py-1 rounded text-xs ${loc.facility_verification_status === 'approved' ? 'bg-green-100 text-green-700' :
+                                            loc.facility_verification_status === 'pending_review' ? 'bg-amber-100 text-amber-700' :
+                                                'bg-slate-100 text-slate-600'
+                                            }`}>
+                                            {loc.facility_verification_status || 'Draft'}
+                                        </span>
+                                        {!loc.is_primary && (
+                                            <button
+                                                onClick={() => handleDeleteLocation(loc.id)}
+                                                className="p-1 text-slate-400 hover:text-red-600 transition-colors"
+                                                title="Delete Location"
+                                            >
+                                                🗑️
+                                            </button>
+                                        )}
+                                    </div>
                                 </div>
-                            ))}
-                        </div>
+                            ))
+                            }
+                        </div >
                     )}
-                </Card>
-            </div>
+                </Card >
+            </div >
         )
     }
 
@@ -1724,6 +1812,7 @@ export default function EmployerDashboard() {
 
         // Count admin roles used (users with elevated permissions) - exclude SuperAdmin
         const adminSeatsUsed = org.staff.filter(s => {
+            if (!s) return false
             // Skip SuperAdmin (platform owner, not a clinic user)
             if (s.role === 'superadmin' || s.email?.includes('@hure.app')) return false
             // Check if user has any elevated permissions via their permission_role
@@ -1907,7 +1996,7 @@ export default function EmployerDashboard() {
 
                 {/* Staff Role Assignments */}
                 <Card title="Staff Role Assignments">
-                    {org.staff.filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false).length === 0 ? (
+                    {org.staff.filter(s => s && s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false).length === 0 ? (
                         <div className="text-center py-8 text-slate-500">
                             No staff members yet. Add staff first to assign roles.
                         </div>
@@ -1922,7 +2011,7 @@ export default function EmployerDashboard() {
                             </thead>
                             <tbody>
                                 {org.staff
-                                    .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false)
+                                    .filter(s => s && s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false)
                                     .map(s => {
                                         const staffRole = roles.find(r => r.name === (s.permission_role || 'Staff')) || roles.find(r => r.name === 'Staff')
                                         return (
@@ -2142,18 +2231,30 @@ export default function EmployerDashboard() {
                 </div>
 
                 {/* Tabs */}
-                <div className="flex gap-2 border-b">
+                <div className="flex gap-4">
                     <button
                         onClick={() => setActiveTab('salaried')}
-                        className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'salaried' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${activeTab === 'salaried'
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+                            }`}
                     >
-                        Salaried Staff ({salariedPayroll.length})
+                        <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${activeTab === 'salaried' ? 'border-transparent bg-white' : 'border-slate-400 bg-transparent'}`}>
+                            {activeTab === 'salaried' && <div className="w-1.5 h-1.5 rounded-full bg-slate-900"></div>}
+                        </div>
+                        Monthly Salary
                     </button>
                     <button
                         onClick={() => setActiveTab('daily')}
-                        className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${activeTab === 'daily' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500'}`}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${activeTab === 'daily'
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+                            }`}
                     >
-                        Daily / Casual ({dailyPayroll.length})
+                        <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${activeTab === 'daily' ? 'border-transparent bg-white' : 'border-slate-400 bg-transparent'}`}>
+                            {activeTab === 'daily' && <div className="w-1.5 h-1.5 rounded-full bg-slate-900"></div>}
+                        </div>
+                        Casual / Daily
                     </button>
                 </div>
 
@@ -3589,9 +3690,23 @@ export default function EmployerDashboard() {
                                                 </button>
                                             </>
                                         ) : (
-                                            <span className={`px-2 py-1 rounded text-xs ${getStatusColor(leave.status)}`}>
-                                                {leave.status}
-                                            </span>
+                                            <div className="flex flex-col items-end gap-1">
+                                                <span className={`px-2 py-1 rounded text-xs px-3 ${getStatusColor(leave.status)}`}>
+                                                    {leave.status}
+                                                </span>
+                                                {leave.reviewed_at && (
+                                                    <div className="text-right mt-1">
+                                                        <div className="text-xs text-slate-500 font-medium">
+                                                            {new Date(leave.reviewed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} • {new Date(leave.reviewed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        </div>
+                                                        {leave.reviewer && (
+                                                            <div className="text-xs text-slate-400">
+                                                                by {leave.reviewer.first_name} {leave.reviewer.last_name}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
                                         )}
                                     </div>
                                 </div>
@@ -3695,37 +3810,47 @@ export default function EmployerDashboard() {
                     </div>
                 </Card>
 
-                <Card title="Danger Zone">
-                    <div className="p-4 bg-red-50 rounded-lg border border-red-200">
-                        <div className="font-medium text-red-700 mb-2">Delete Organization</div>
-                        <p className="text-sm text-red-600 mb-4">This action cannot be undone. All data will be permanently deleted.</p>
+                <Card title="Deactivate Organization">
+                    <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+                        <div className="font-medium text-amber-800 mb-2">Deactivate Organization</div>
+                        <p className="text-sm text-amber-700 mb-4">
+                            This action will suspend all staff accounts, pause billing, and strictly limit access.
+                            <br />
+                            <strong>Data will be preserved but read-only.</strong> Only an administrator can reactivate it.
+                        </p>
                         <button
                             onClick={async () => {
-                                const confirmed = window.confirm('Are you sure you want to delete this organization? This action cannot be undone. All data will be permanently deleted.')
+                                const confirmed = window.confirm(
+                                    'Are you sure you want to deactivate this organization?\n\n' +
+                                    '• All staff logins will be suspended immediately.\n' +
+                                    '• No new shifts, payroll, or documents can be created.\n' +
+                                    '• Subscription billing will be paused/cancelled.\n\n' +
+                                    'This action is reversible only by contacting support.'
+                                )
                                 if (confirmed) {
                                     const clinicId = localStorage.getItem('hure_clinic_id')
                                     try {
-                                        const res = await fetch(`/api/clinics/${clinicId}`, {
-                                            method: 'DELETE',
+                                        const res = await fetch(`/api/clinics/${clinicId}/deactivate`, {
+                                            method: 'POST',
                                             headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                                         })
                                         if (res.ok) {
-                                            alert('Organization deleted successfully.')
+                                            alert('Organization deactivated successfully. You will now be logged out.')
                                             localStorage.removeItem('hure_clinic_id')
                                             localStorage.removeItem('hure_token')
                                             window.location.href = '/login'
                                         } else {
-                                            alert('Failed to delete organization. Please try again.')
+                                            alert('Failed to deactivate organization. Please try again.')
                                         }
                                     } catch (err) {
-                                        console.error('Delete error:', err)
-                                        alert('Failed to delete organization. Please try again.')
+                                        console.error('Deactivate error:', err)
+                                        alert('Failed to deactivate organization. Please try again.')
                                     }
                                 }
                             }}
-                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm"
+                            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm"
                         >
-                            Delete Organization
+                            Deactivate Organization
                         </button>
                     </div>
                 </Card>

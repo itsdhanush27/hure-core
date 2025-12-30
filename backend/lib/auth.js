@@ -11,9 +11,9 @@ export function generateToken(payload) {
 export const ROLE_PERMISSIONS = {
     'Staff': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile'],
     'Shift Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'payroll', 'manage_staff'],
-    'HR Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'staff_list', 'approve_leave', 'team_attendance'],
+    'HR Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance'],
     'Payroll Officer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_attendance', 'payroll'],
-    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'approve_leave', 'team_attendance', 'payroll', 'settings']
+    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings']
 }
 
 export function verifyToken(token) {

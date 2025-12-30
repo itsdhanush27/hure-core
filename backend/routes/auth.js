@@ -38,8 +38,8 @@ router.post('/login', async (req, res) => {
         }
 
         // Check clinic status
-        if (user.clinics?.status === 'suspended') {
-            return res.status(403).json({ error: 'Your organization has been suspended' })
+        if (['suspended', 'inactive'].includes(user.clinics?.status)) {
+            return res.status(403).json({ error: 'Your organization is inactive. Please contact support.' })
         }
 
         // Check user active status
