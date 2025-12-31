@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../App'
+import PayrollView from '../PayrollView'
+import LeaveTypesManager from '../LeaveTypesManager'
 
 // Plan limits configuration
 const PLAN_LIMITS = {
@@ -59,8 +61,8 @@ export default function EmployerDashboard() {
         }
 
         fetchDashboardData(clinicId)
-        fetchDashboardStats(clinicId)
-    }, [])
+        fetchDashboardStats(clinicId) // Uses current selectedLocation from state
+    }, [selectedLocation]) // Refetch on location change
 
     const fetchDashboardStats = async (clinicId) => {
         const token = localStorage.getItem('hure_token')
@@ -68,7 +70,8 @@ export default function EmployerDashboard() {
 
         try {
             // Fetch today's schedules
-            const schedRes = await fetch(`/api/clinics/${clinicId}/schedule?date=${today}`, {
+            const locQuery = selectedLocation && selectedLocation !== 'all' ? `&locationId=${selectedLocation}` : ''
+            const schedRes = await fetch(`/api/clinics/${clinicId}/schedule?date=${today}${locQuery}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             })
             if (schedRes.ok) {
@@ -76,7 +79,7 @@ export default function EmployerDashboard() {
                 const todayShifts = (data.data || []).length
 
                 // Fetch today's attendance
-                const attRes = await fetch(`/api/clinics/${clinicId}/attendance?startDate=${today}&endDate=${today}`, {
+                const attRes = await fetch(`/api/clinics/${clinicId}/attendance?startDate=${today}&endDate=${today}${locQuery}`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 })
                 let presentCount = 0
@@ -143,7 +146,8 @@ export default function EmployerDashboard() {
             }
 
             // Fetch staff (include owner for payroll purposes)
-            const staffRes = await fetch(`/api/clinics/${clinicId}/staff?includeOwner=true`, {
+            const locQuery = selectedLocation && selectedLocation !== 'all' ? `&locationId=${selectedLocation}` : ''
+            const staffRes = await fetch(`/api/clinics/${clinicId}/staff?includeOwner=true${locQuery}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             })
             if (staffRes.ok) {
@@ -867,12 +871,7 @@ export default function EmployerDashboard() {
                         >
                             Salaried
                         </button>
-                        <button
-                            onClick={() => setStaffTab('casual')}
-                            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${staffTab === 'casual' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                        >
-                            Daily / Casual
-                        </button>
+
                     </div>
 
                     {org.staff.length === 0 ? (
@@ -900,7 +899,7 @@ export default function EmployerDashboard() {
                                         if (staffTab === 'all') return true
                                         const type = (s.employment_type || 'full-time').toLowerCase()
                                         if (staffTab === 'salaried') return ['full-time', 'part-time', 'salaried'].includes(type)
-                                        if (staffTab === 'casual') return ['daily', 'casual', 'contract'].includes(type)
+
                                         return true
                                     })
                                     .map(s => {
@@ -2046,335 +2045,7 @@ export default function EmployerDashboard() {
         )
     }
 
-    // ============================================
-    // PAYROLL VIEW
-    // ============================================
 
-    const PayrollView = () => {
-        const [activeTab, setActiveTab] = useState('salaried')
-        const [dateRange, setDateRange] = useState({ start: '', end: '' })
-        const [payrollData, setPayrollData] = useState([])
-        const [loadingPayroll, setLoadingPayroll] = useState(false)
-        const [paymentNotes, setPaymentNotes] = useState({})
-        const [updatingPayment, setUpdatingPayment] = useState({})
-
-        // Fetch payroll data when date range changes
-        useEffect(() => {
-            const fetchPayroll = async () => {
-                if (!dateRange.start || !dateRange.end) return
-
-                const clinicId = localStorage.getItem('hure_clinic_id')
-                const token = localStorage.getItem('hure_token')
-
-                setLoadingPayroll(true)
-                try {
-                    const res = await fetch(
-                        `/api/clinics/${clinicId}/payroll?startDate=${dateRange.start}&endDate=${dateRange.end}`,
-                        { headers: { 'Authorization': `Bearer ${token}` } }
-                    )
-                    if (res.ok) {
-                        const data = await res.json()
-                        console.log('📊 Payroll data received:', data)
-                        setPayrollData(data.data || [])
-                    }
-                } catch (err) {
-                    console.error('Payroll fetch error:', err)
-                } finally {
-                    setLoadingPayroll(false)
-                }
-            }
-            fetchPayroll()
-        }, [dateRange.start, dateRange.end])
-
-        // Filter payroll data by type
-        const salariedPayroll = payrollData.filter(p => p.employmentType === 'salaried' || p.employmentType === 'full-time' || p.employmentType === 'part-time')
-        const dailyPayroll = payrollData.filter(p => p.employmentType === 'casual' || p.employmentType === 'daily' || p.employmentType === 'contract' || p.type === 'locum')
-
-        // Handle payment status toggle
-        const handlePaymentToggle = async (record) => {
-            const clinicId = localStorage.getItem('hure_clinic_id')
-            const newStatus = record.paymentStatus === 'PAID' ? 'UNPAID' : 'PAID'
-
-            setUpdatingPayment(prev => ({ ...prev, [record.id]: true }))
-
-            try {
-                const res = await fetch(`/api/clinics/${clinicId}/payroll/${record.id}/status`, {
-                    method: 'PATCH',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
-                    },
-                    body: JSON.stringify({
-                        paymentStatus: newStatus,
-                        paymentNote: paymentNotes[record.id] || '',
-                        userId: record.userId,
-                        locumId: record.locumId,
-                        periodStart: dateRange.start,
-                        periodEnd: dateRange.end,
-                        unitsWorked: record.unitsWorked,
-                        rate: record.rate,
-                        grossPay: record.grossPay,
-                        payType: record.employmentType
-                    })
-                })
-                if (res.ok) {
-                    setPayrollData(prev => prev.map(p =>
-                        p.id === record.id ? { ...p, paymentStatus: newStatus } : p
-                    ))
-                }
-            } catch (err) {
-                console.error('Update payment status error:', err)
-            } finally {
-                setUpdatingPayment(prev => ({ ...prev, [record.id]: false }))
-            }
-        }
-
-        // Export payroll to CSV
-        const exportPayrollCSV = async () => {
-            const clinicId = localStorage.getItem('hure_clinic_id')
-            const token = localStorage.getItem('hure_token')
-
-            try {
-                const res = await fetch(`/api/clinics/${clinicId}/payroll/export?startDate=${dateRange.start}&endDate=${dateRange.end}`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                })
-
-                if (res.ok) {
-                    const blob = await res.blob()
-                    const url = window.URL.createObjectURL(blob)
-                    const a = document.createElement('a')
-                    a.href = url
-                    a.download = `payroll_${dateRange.start}_${dateRange.end}.csv`
-                    document.body.appendChild(a)
-                    a.click()
-                    document.body.removeChild(a)
-                    window.URL.revokeObjectURL(url)
-                } else {
-                    alert('Failed to export payroll')
-                }
-            } catch (err) {
-                console.error('Export error:', err)
-                alert('Failed to export payroll')
-            }
-        }
-
-        return (
-            <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h1 className="text-xl font-bold">Payroll</h1>
-                        <p className="text-slate-500 text-sm">Calculate and export payroll based on attendance</p>
-                    </div>
-                    <button
-                        onClick={exportPayrollCSV}
-                        disabled={!dateRange.start || !dateRange.end}
-                        className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        Export Payroll
-                    </button>
-                </div>
-
-                {/* Date Range Picker */}
-                <Card>
-                    <div className="flex items-center gap-4 flex-wrap">
-                        <div>
-                            <label className="block text-xs text-slate-500 mb-1">Date Range</label>
-                            <div className="flex items-center gap-2">
-                                <input
-                                    type="date"
-                                    value={dateRange.start}
-                                    onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
-                                    className="px-3 py-2 border rounded-lg text-sm"
-                                />
-                                <span className="text-slate-400">→</span>
-                                <input
-                                    type="date"
-                                    value={dateRange.end}
-                                    onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
-                                    className="px-3 py-2 border rounded-lg text-sm"
-                                />
-                            </div>
-                        </div>
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => {
-                                    const now = new Date()
-                                    const start = new Date(now.getFullYear(), now.getMonth(), 1)
-                                    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-                                    setDateRange({ start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] })
-                                }}
-                                className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50"
-                            >
-                                This Month
-                            </button>
-                            <button
-                                onClick={() => {
-                                    const now = new Date()
-                                    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-                                    const end = new Date(now.getFullYear(), now.getMonth(), 0)
-                                    setDateRange({ start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] })
-                                }}
-                                className="px-3 py-2 border rounded-lg text-sm hover:bg-slate-50"
-                            >
-                                Last Month
-                            </button>
-                        </div>
-                    </div>
-                </Card>
-
-                {/* Info Panel */}
-                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
-                    <strong>ℹ️ How payroll is calculated:</strong> Payroll is derived from attendance records.
-                    <div className="mt-2 text-xs">
-                        • <strong>Salaried:</strong> (Salary ÷ Period Days) × Units Worked | • <strong>Daily/Casual:</strong> Units × Daily Rate
-                    </div>
-                </div>
-
-                {/* Tabs */}
-                <div className="flex gap-4">
-                    <button
-                        onClick={() => setActiveTab('salaried')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${activeTab === 'salaried'
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                            }`}
-                    >
-                        <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${activeTab === 'salaried' ? 'border-transparent bg-white' : 'border-slate-400 bg-transparent'}`}>
-                            {activeTab === 'salaried' && <div className="w-1.5 h-1.5 rounded-full bg-slate-900"></div>}
-                        </div>
-                        Monthly Salary
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('daily')}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors ${activeTab === 'daily'
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-                            }`}
-                    >
-                        <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${activeTab === 'daily' ? 'border-transparent bg-white' : 'border-slate-400 bg-transparent'}`}>
-                            {activeTab === 'daily' && <div className="w-1.5 h-1.5 rounded-full bg-slate-900"></div>}
-                        </div>
-                        Casual / Daily
-                    </button>
-                </div>
-
-                {/* Salaried Staff Tab */}
-                {activeTab === 'salaried' && (
-                    <Card title="Salaried Staff">
-                        <p className="text-sm text-slate-500 mb-4">
-                            Gross Pay = (Monthly Salary ÷ Period Days) × Units Worked
-                        </p>
-                        {loadingPayroll ? (
-                            <div className="text-center py-8">Loading...</div>
-                        ) : salariedPayroll.length === 0 ? (
-                            <div className="text-center py-8 text-slate-500">
-                                {dateRange.start ? 'No salaried staff with attendance in this period.' : 'Select a date range to view payroll.'}
-                            </div>
-                        ) : (
-                            <table className="w-full">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Staff</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Role</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units Worked</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Rate</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {salariedPayroll.map(record => (
-                                        <tr key={record.id} className="border-t">
-                                            <td className="p-3 font-medium">{record.name}</td>
-                                            <td className="p-3">{record.role || 'Staff'}</td>
-                                            <td className="p-3">{record.unitsWorked?.toFixed(1) || 0}</td>
-                                            <td className="p-3">KSh {(record.rate || 0).toLocaleString()}/mo</td>
-                                            <td className="p-3 font-medium">KSh {(record.grossPay || 0).toLocaleString()}</td>
-                                            <td className="p-3">
-                                                <button
-                                                    onClick={() => handlePaymentToggle(record)}
-                                                    disabled={updatingPayment[record.id]}
-                                                    className={`px-2 py-1 text-xs rounded ${record.paymentStatus === 'PAID'
-                                                        ? 'bg-green-100 text-green-700'
-                                                        : 'bg-amber-100 text-amber-700'
-                                                        }`}
-                                                >
-                                                    {updatingPayment[record.id] ? '...' : (record.paymentStatus || 'UNPAID')}
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        )}
-                    </Card>
-                )}
-
-                {/* Daily/Casual Staff Tab (includes External Locums) */}
-                {activeTab === 'daily' && (
-                    <Card title="Daily / Casual Staff">
-                        <p className="text-sm text-slate-500 mb-4">
-                            Includes internal casual staff + external locums. Pay = Units × Daily Rate
-                        </p>
-                        {loadingPayroll ? (
-                            <div className="text-center py-8">Loading...</div>
-                        ) : dailyPayroll.length === 0 ? (
-                            <div className="text-center py-8 text-slate-500">
-                                {dateRange.start ? 'No daily/casual staff or locums with attendance in this period.' : 'Select a date range to view payroll.'}
-                            </div>
-                        ) : (
-                            <table className="w-full">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Name</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Type</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Units</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Daily Rate</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Gross</th>
-                                        <th className="text-left p-3 text-sm font-medium text-slate-600">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {dailyPayroll.map(record => (
-                                        <tr key={record.id} className="border-t">
-                                            <td className="p-3">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-medium">{record.name}</span>
-                                                    {record.type === 'locum' && (
-                                                        <span className="px-2 py-0.5 text-xs bg-teal-100 text-teal-700 rounded-full">External</span>
-                                                    )}
-                                                </div>
-                                            </td>
-                                            <td className="p-3">{record.type === 'locum' ? 'Locum' : (record.role || 'Casual')}</td>
-                                            <td className="p-3">{record.unitsWorked?.toFixed(1) || 0}</td>
-                                            <td className="p-3">KSh {(record.rate || 0).toLocaleString()}</td>
-                                            <td className="p-3 font-medium">KSh {(record.grossPay || 0).toLocaleString()}</td>
-                                            <td className="p-3">
-                                                <button
-                                                    onClick={() => handlePaymentToggle(record)}
-                                                    disabled={updatingPayment[record.id]}
-                                                    className={`px-2 py-1 text-xs rounded ${record.paymentStatus === 'PAID'
-                                                        ? 'bg-green-100 text-green-700'
-                                                        : 'bg-amber-100 text-amber-700'
-                                                        }`}
-                                                >
-                                                    {updatingPayment[record.id] ? '...' : (record.paymentStatus || 'UNPAID')}
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        )}
-                    </Card>
-                )}
-            </div>
-        )
-    }
-
-    // ============================================
-    // BILLING VIEW
-    // ============================================
 
     const BillingView = () => {
         const [showUpgradeModal, setShowUpgradeModal] = useState(false)
@@ -2537,12 +2208,13 @@ export default function EmployerDashboard() {
 
         useEffect(() => {
             fetchSchedules()
-        }, [])
+        }, [selectedLocation])
 
         const fetchSchedules = async () => {
             const clinicId = localStorage.getItem('hure_clinic_id')
             try {
-                const res = await fetch(`/api/clinics/${clinicId}/schedule`, {
+                const locQuery = selectedLocation && selectedLocation !== 'all' ? `?locationId=${selectedLocation}` : ''
+                const res = await fetch(`/api/clinics/${clinicId}/schedule${locQuery}`, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
                 if (res.ok) {
@@ -2619,6 +2291,7 @@ export default function EmployerDashboard() {
 
         // External locum state
         const [coverageTab, setCoverageTab] = useState('staff') // 'staff' | 'locum'
+        const [staffSearch, setStaffSearch] = useState('')
         const [locums, setLocums] = useState([])
         const [locumForm, setLocumForm] = useState({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
         const [addingLocum, setAddingLocum] = useState(false)
@@ -2650,6 +2323,13 @@ export default function EmployerDashboard() {
                     const data = await res.json()
                     setLocums([data.data, ...locums])
                     setLocumForm({ name: '', phone: '', dailyRate: '', supervisorId: '', notes: '' })
+
+                    // Update schedules list count
+                    setSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, locum_count: (s.locum_count || 0) + 1 }
+                            : s
+                    ))
                 } else {
                     alert('Failed to add locum')
                 }
@@ -2669,6 +2349,13 @@ export default function EmployerDashboard() {
                 })
                 if (res.ok) {
                     setLocums(locums.filter(l => l.id !== locumId))
+
+                    // Update schedules list count
+                    setSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, locum_count: Math.max(0, (s.locum_count || 0) - 1) }
+                            : s
+                    ))
                 }
             } catch (err) {
                 console.error('Remove locum error:', err)
@@ -2684,7 +2371,15 @@ export default function EmployerDashboard() {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
                 if (res.ok) {
+                    const removedCount = locums.length
                     setLocums([])
+
+                    // Update schedules list count
+                    setSchedules(prev => prev.map(s =>
+                        s.id === selectedShift.id
+                            ? { ...s, locum_count: Math.max(0, (s.locum_count || 0) - removedCount) }
+                            : s
+                    ))
                 }
             } catch (err) {
                 console.error('Clear locums error:', err)
@@ -3007,11 +2702,30 @@ export default function EmployerDashboard() {
                                         )}
                                         {/* Available Staff */}
                                         <div>
-                                            <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
+                                            <div className="mb-3">
+                                                <h3 className="text-sm font-medium text-slate-700 mb-2">Available Staff</h3>
+                                                <input
+                                                    type="text"
+                                                    value={staffSearch}
+                                                    onChange={(e) => setStaffSearch(e.target.value)}
+                                                    placeholder="Search by name or role..."
+                                                    className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                                                />
+                                            </div>
                                             <div className="space-y-2">
                                                 {org.staff
                                                     .filter(s => s.role !== 'superadmin' && !s.email?.includes('@hure.app') && s.is_active !== false)
                                                     .filter(s => !selectedShift.schedule_assignments?.some(a => a.user_id === s.id))
+                                                    .filter(s => {
+                                                        if (!staffSearch) return true
+                                                        const searchLower = staffSearch.toLowerCase()
+                                                        return (
+                                                            s.first_name?.toLowerCase().includes(searchLower) ||
+                                                            s.last_name?.toLowerCase().includes(searchLower) ||
+                                                            s.job_title?.toLowerCase().includes(searchLower) ||
+                                                            s.role?.toLowerCase().includes(searchLower)
+                                                        )
+                                                    })
                                                     .map(staff => (
                                                         <div key={staff.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border">
                                                             <div>
@@ -3171,13 +2885,16 @@ export default function EmployerDashboard() {
 
         useEffect(() => {
             fetchAttendance()
-        }, [dateFilter, endDateFilter])
+        }, [dateFilter, endDateFilter, selectedLocation])
 
         const fetchAttendance = async () => {
             const clinicId = localStorage.getItem('hure_clinic_id')
             try {
-                // Fetch staff attendance (includes locum attendance records from DB)
-                const staffRes = await fetch(`/api/clinics/${clinicId}/attendance?startDate=${dateFilter}&endDate=${endDateFilter}&includeLocums=true`, {
+                // Fetch staff attendance with location filter, but locums without (they're fetched separately in backend)
+                const locQuery = selectedLocation && selectedLocation !== 'all' ? `&locationId=${selectedLocation}` : ''
+                const url = `/api/clinics/${clinicId}/attendance?startDate=${dateFilter}&endDate=${endDateFilter}&includeLocums=true${locQuery}`
+                console.log('Fetching Attendance URL:', url)
+                const staffRes = await fetch(url, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
                 let allAttendanceData = []
@@ -3185,24 +2902,40 @@ export default function EmployerDashboard() {
 
                 if (staffRes.ok) {
                     const data = await staffRes.json()
+                    console.log('=== ATTENDANCE DEBUG ===')
+                    console.log('API Version:', data._version)
+                    console.log('Raw attendance data:', data.data?.length, 'records')
+                    console.log('API Debug info:', data.debug)
+                    console.log('Locum records:', data.data?.filter(a => a.type === 'locum' || a.external_locum_id).length)
+
                     allAttendanceData = (data.data || []).map(a => {
                         // Track which locums already have attendance recorded
                         if (a.external_locum_id) {
+                            console.log(`  Adding to recordedLocumIds: ${a.external_locum_id} (${a.locum_name || a.external_locums?.name}), status: ${a.status}`)
                             recordedLocumIds.add(a.external_locum_id)
                             return {
                                 ...a,
                                 type: 'locum',
+                                locum_id: a.external_locum_id,
                                 locum_name: a.external_locums?.name || a.locum_name || 'External Locum',
                                 locum_role: a.external_locums?.role || a.locum_role,
+                                locum_phone: a.external_locums?.phone || a.locum_phone,
+                                status: a.status || a.locum_status, // Use status from new table
                                 recorded: true
                             }
                         }
                         return { ...a, type: 'staff' }
                     })
+                } else {
+                    const errData = await staffRes.json()
+                    console.error('❌ Attendance API Failed:', errData)
                 }
+                console.log('recordedLocumIds set:', [...recordedLocumIds])
+
 
                 // Fetch external locums from today's shifts (only ones NOT already recorded)
-                const scheduleRes = await fetch(`/api/clinics/${clinicId}/schedule?startDate=${dateFilter}&endDate=${dateFilter}`, {
+                // Fetch external locums from today's shifts (only ones NOT already recorded)
+                const scheduleRes = await fetch(`/api/clinics/${clinicId}/schedule?startDate=${dateFilter}&endDate=${dateFilter}${locQuery}`, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
 
@@ -3219,6 +2952,7 @@ export default function EmployerDashboard() {
                             const locums = await locumRes.json()
                             for (const locum of (locums.data || [])) {
                                 // Skip if already has attendance recorded
+                                console.log(`  Checking locum ${locum.name} (${locum.id}) - in recordedLocumIds: ${recordedLocumIds.has(locum.id)}`)
                                 if (recordedLocumIds.has(locum.id)) continue
 
                                 allAttendanceData.push({
@@ -3524,32 +3258,29 @@ export default function EmployerDashboard() {
     // ============================================
 
     const LeaveView = () => {
+        const [tab, setTab] = useState('requests') // requests | settings
         const [leaveRequests, setLeaveRequests] = useState([])
         const [leaveLoading, setLeaveLoading] = useState(true)
         const [statusFilter, setStatusFilter] = useState('')
 
         useEffect(() => {
-            fetchLeaveRequests()
-        }, [statusFilter])
+            if (tab === 'requests') fetchLeaveRequests()
+        }, [statusFilter, selectedLocation, tab])
 
         const fetchLeaveRequests = async () => {
+            setLeaveLoading(true)
             const clinicId = localStorage.getItem('hure_clinic_id')
-            console.log('📋 LeaveView fetching from clinic:', clinicId)
-            const url = statusFilter
-                ? `/api/clinics/${clinicId}/leave?status=${statusFilter}`
-                : `/api/clinics/${clinicId}/leave`
-            console.log('📋 LeaveView URL:', url)
+            let url = `/api/clinics/${clinicId}/leave?`
+            if (statusFilter) url += `status=${statusFilter}&`
+            if (selectedLocation && selectedLocation !== 'all') url += `locationId=${selectedLocation}&`
+
             try {
                 const res = await fetch(url, {
                     headers: { 'Authorization': `Bearer ${localStorage.getItem('hure_token')}` }
                 })
-                console.log('📋 LeaveView response status:', res.status)
                 if (res.ok) {
                     const data = await res.json()
-                    console.log('📋 LeaveView results:', data.data?.length || 0, 'requests')
                     setLeaveRequests(data.data || [])
-                } else {
-                    console.error('📋 LeaveView error:', await res.text())
                 }
             } catch (err) {
                 console.error('Fetch leave error:', err)
@@ -3560,7 +3291,6 @@ export default function EmployerDashboard() {
 
         const handleUpdateLeave = async (leaveId, status) => {
             const clinicId = localStorage.getItem('hure_clinic_id')
-            console.log('📋 Updating leave:', leaveId, 'to', status)
             try {
                 const res = await fetch(`/api/clinics/${clinicId}/leave/${leaveId}`, {
                     method: 'PATCH',
@@ -3570,14 +3300,10 @@ export default function EmployerDashboard() {
                     },
                     body: JSON.stringify({ status })
                 })
-                console.log('📋 Update response:', res.status)
                 if (res.ok) {
-                    alert(`Leave request ${status}!`)
                     fetchLeaveRequests()
                 } else {
-                    const err = await res.json()
-                    console.error('📋 Update error:', err)
-                    alert(err.error || `Failed to ${status} leave request`)
+                    alert(`Failed to ${status} leave request`)
                 }
             } catch (err) {
                 console.error('Update leave error:', err)
@@ -3612,108 +3338,126 @@ export default function EmployerDashboard() {
                 <div className="flex items-center justify-between">
                     <div>
                         <h1 className="text-xl font-bold">Leave Management</h1>
-                        <p className="text-slate-500 text-sm">Review and manage staff leave requests</p>
+                        <p className="text-slate-500 text-sm">Review requests and configure policies</p>
                     </div>
-                    <select
-                        value={statusFilter}
-                        onChange={(e) => setStatusFilter(e.target.value)}
-                        className="px-3 py-2 rounded-lg border border-slate-300"
-                    >
-                        <option value="">All Requests</option>
-                        <option value="pending">Pending</option>
-                        <option value="approved">Approved</option>
-                        <option value="rejected">Rejected</option>
-                    </select>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setTab('requests')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'requests' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border hover:bg-slate-50'}`}
+                        >
+                            Requests
+                        </button>
+                        <button
+                            onClick={() => setTab('settings')}
+                            className={`px-4 py-2 rounded-lg text-sm font-medium ${tab === 'settings' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border hover:bg-slate-50'}`}
+                        >
+                            Settings
+                        </button>
+                    </div>
                 </div>
 
-                {/* Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <Card>
-                        <div className="text-center">
-                            <div className="text-3xl font-bold text-amber-600">{leaveRequests.filter(l => l.status === 'pending').length}</div>
-                            <div className="text-sm text-slate-500">Pending Review</div>
+                {tab === 'settings' ? (
+                    <LeaveTypesManager clinicId={localStorage.getItem('hure_clinic_id')} token={localStorage.getItem('hure_token')} />
+                ) : (
+                    <>
+                        <div className="flex justify-end">
+                            <select
+                                value={statusFilter}
+                                onChange={(e) => setStatusFilter(e.target.value)}
+                                className="px-3 py-2 rounded-lg border border-slate-300 bg-white"
+                            >
+                                <option value="">All Requests</option>
+                                <option value="pending">Pending</option>
+                                <option value="approved">Approved</option>
+                                <option value="rejected">Rejected</option>
+                            </select>
                         </div>
-                    </Card>
-                    <Card>
-                        <div className="text-center">
-                            <div className="text-3xl font-bold text-green-600">{leaveRequests.filter(l => l.status === 'approved').length}</div>
-                            <div className="text-sm text-slate-500">Approved</div>
-                        </div>
-                    </Card>
-                    <Card>
-                        <div className="text-center">
-                            <div className="text-3xl font-bold text-red-600">{leaveRequests.filter(l => l.status === 'rejected').length}</div>
-                            <div className="text-sm text-slate-500">Rejected</div>
-                        </div>
-                    </Card>
-                </div>
 
-                {/* Leave Requests */}
-                <Card title="Leave Requests">
-                    {leaveLoading ? (
-                        <div className="text-center py-8">Loading...</div>
-                    ) : leaveRequests.length === 0 ? (
-                        <div className="text-center py-12 text-slate-500">
-                            <div className="text-4xl mb-4">🏖️</div>
-                            <div>No leave requests found.</div>
+                        {/* Stats */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <Card>
+                                <div className="text-center">
+                                    <div className="text-3xl font-bold text-amber-600">{leaveRequests.filter(l => l.status === 'pending').length}</div>
+                                    <div className="text-sm text-slate-500">Pending Review</div>
+                                </div>
+                            </Card>
+                            <Card>
+                                <div className="text-center">
+                                    <div className="text-3xl font-bold text-green-600">{leaveRequests.filter(l => l.status === 'approved').length}</div>
+                                    <div className="text-sm text-slate-500">Approved</div>
+                                </div>
+                            </Card>
+                            <Card>
+                                <div className="text-center">
+                                    <div className="text-3xl font-bold text-red-600">{leaveRequests.filter(l => l.status === 'rejected').length}</div>
+                                    <div className="text-sm text-slate-500">Rejected</div>
+                                </div>
+                            </Card>
                         </div>
-                    ) : (
-                        <div className="divide-y">
-                            {leaveRequests.map(leave => (
-                                <div key={leave.id} className="py-4 flex items-center justify-between">
-                                    <div className="flex items-center gap-4">
-                                        <div className="w-12 h-12 bg-slate-100 rounded-lg flex items-center justify-center text-2xl">
-                                            {getLeaveTypeIcon(leave.leave_type)}
-                                        </div>
-                                        <div>
-                                            <div className="font-medium">{leave.user?.first_name} {leave.user?.last_name}</div>
-                                            <div className="text-sm text-slate-500">
-                                                {leave.leave_type?.charAt(0).toUpperCase() + leave.leave_type?.slice(1)} Leave · {formatDate(leave.start_date)} - {formatDate(leave.end_date)}
+
+                        {/* Leave Requests */}
+                        <Card title="Leave Requests">
+                            {leaveLoading ? (
+                                <div className="text-center py-8">Loading...</div>
+                            ) : leaveRequests.length === 0 ? (
+                                <div className="text-center py-12 text-slate-500">
+                                    <div className="text-4xl mb-4">🏖️</div>
+                                    <div>No leave requests found.</div>
+                                </div>
+                            ) : (
+                                <div className="divide-y">
+                                    {leaveRequests.map(leave => (
+                                        <div key={leave.id} className="py-4 flex items-center justify-between">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 bg-slate-100 rounded-lg flex items-center justify-center text-2xl">
+                                                    {getLeaveTypeIcon(leave.leave_type)}
+                                                </div>
+                                                <div>
+                                                    <div className="font-medium">{leave.user?.first_name} {leave.user?.last_name}</div>
+                                                    <div className="text-sm text-slate-500">
+                                                        {leave.leave_type?.charAt(0).toUpperCase() + leave.leave_type?.slice(1)} Leave · {formatDate(leave.start_date)} - {formatDate(leave.end_date)}
+                                                    </div>
+                                                    {leave.reason && <div className="text-xs text-slate-400 mt-1">{leave.reason}</div>}
+                                                </div>
                                             </div>
-                                            {leave.reason && <div className="text-xs text-slate-400 mt-1">{leave.reason}</div>}
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        {leave.status === 'pending' ? (
-                                            <>
-                                                <button
-                                                    onClick={() => handleUpdateLeave(leave.id, 'approved')}
-                                                    className="px-3 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm"
-                                                >
-                                                    Approve
-                                                </button>
-                                                <button
-                                                    onClick={() => handleUpdateLeave(leave.id, 'rejected')}
-                                                    className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm"
-                                                >
-                                                    Reject
-                                                </button>
-                                            </>
-                                        ) : (
-                                            <div className="flex flex-col items-end gap-1">
-                                                <span className={`px-2 py-1 rounded text-xs px-3 ${getStatusColor(leave.status)}`}>
-                                                    {leave.status}
-                                                </span>
-                                                {leave.reviewed_at && (
-                                                    <div className="text-right mt-1">
-                                                        <div className="text-xs text-slate-500 font-medium">
-                                                            {new Date(leave.reviewed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} • {new Date(leave.reviewed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                                        </div>
-                                                        {leave.reviewer && (
-                                                            <div className="text-xs text-slate-400">
-                                                                by {leave.reviewer.first_name} {leave.reviewer.last_name}
+                                            <div className="flex items-center gap-2">
+                                                {leave.status === 'pending' ? (
+                                                    <>
+                                                        <button
+                                                            onClick={() => handleUpdateLeave(leave.id, 'approved')}
+                                                            className="px-3 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm"
+                                                        >
+                                                            Approve
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleUpdateLeave(leave.id, 'rejected')}
+                                                            className="px-3 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 text-sm"
+                                                        >
+                                                            Reject
+                                                        </button>
+                                                    </>
+                                                ) : (
+                                                    <div className="flex flex-col items-end gap-1">
+                                                        <span className={`px-2 py-1 rounded text-xs px-3 ${getStatusColor(leave.status)}`}>
+                                                            {leave.status}
+                                                        </span>
+                                                        {leave.reviewed_at && (
+                                                            <div className="text-right mt-1">
+                                                                <div className="text-xs text-slate-500 font-medium">
+                                                                    {new Date(leave.reviewed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                                                                </div>
                                                             </div>
                                                         )}
                                                     </div>
                                                 )}
                                             </div>
-                                        )}
-                                    </div>
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
-                        </div>
-                    )}
-                </Card>
+                            )}
+                        </Card>
+                    </>
+                )}
             </div>
         )
     }
@@ -3881,7 +3625,7 @@ export default function EmployerDashboard() {
             case 'staff': return <StaffView />
             case 'schedule': return <ScheduleView />
             case 'attendance': return <AttendanceView />
-            case 'payroll': return <PayrollView />
+            case 'payroll': return <PayrollView clinicId={localStorage.getItem('hure_clinic_id')} token={localStorage.getItem('hure_token')} locationId={selectedLocation} />
             case 'leave': return <LeaveView />
             case 'verification': return <VerificationView />
             case 'locations': return <LocationsView />

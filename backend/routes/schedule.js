@@ -95,7 +95,7 @@ router.post('/:blockId/assign', authMiddleware, requirePermission('manage_schedu
                 external_notes: externalNotes,
                 status: 'pending'  // Requires employee to accept
             })
-            .select()
+            .select('*, users(first_name, last_name, job_title)')
             .single()
 
         if (error) {
@@ -115,13 +115,41 @@ router.delete('/:blockId', authMiddleware, requirePermission('manage_schedule'),
     try {
         const { clinicId, blockId } = req.params
 
-        // First delete any assignments
+        // 1. Get all external locums for this shift
+        const { data: locums } = await supabaseAdmin
+            .from('external_locums')
+            .select('id')
+            .eq('schedule_block_id', blockId)
+
+        const locumIds = (locums || []).map(l => l.id)
+
+        if (locumIds.length > 0) {
+            // 2. Delete attendance for these locums
+            await supabaseAdmin
+                .from('attendance')
+                .delete()
+                .in('external_locum_id', locumIds)
+
+            // 3. Delete payroll records for these locums
+            await supabaseAdmin
+                .from('payroll_records')
+                .delete()
+                .in('external_locum_id', locumIds)
+
+            // 4. Delete the external locums
+            await supabaseAdmin
+                .from('external_locums')
+                .delete()
+                .eq('schedule_block_id', blockId)
+        }
+
+        // 5. Delete any assignments
         await supabaseAdmin
             .from('schedule_assignments')
             .delete()
             .eq('schedule_block_id', blockId)
 
-        // Then delete the shift
+        // 6. Then delete the shift
         const { error } = await supabaseAdmin
             .from('schedule_blocks')
             .delete()
@@ -202,10 +230,10 @@ router.post('/:blockId/locums', authMiddleware, requirePermission('manage_schedu
             return res.status(400).json({ error: 'Locum name is required' })
         }
 
-        // Get shift details for default role
+        // Get shift details including location_id
         const { data: shift } = await supabaseAdmin
             .from('schedule_blocks')
-            .select('role_required')
+            .select('role_required, location_id')
             .eq('id', blockId)
             .single()
 
@@ -214,6 +242,7 @@ router.post('/:blockId/locums', authMiddleware, requirePermission('manage_schedu
             .insert({
                 clinic_id: clinicId,
                 schedule_block_id: blockId,
+                location_id: shift?.location_id, // Store location directly
                 name,
                 phone: phone || null,
                 role: role || shift?.role_required || 'General',
@@ -250,12 +279,17 @@ router.delete('/:blockId/locums/:locumId', authMiddleware, requirePermission('ma
             .eq('external_locum_id', locumId)
             .eq('clinic_id', clinicId)
 
-        // Delete any payroll records for this locum
+        // Delete any payroll records for this locum (both tables just in case)
         await supabaseAdmin
             .from('payroll_records')
             .delete()
             .eq('external_locum_id', locumId)
             .eq('clinic_id', clinicId)
+
+        await supabaseAdmin
+            .from('payroll_items')
+            .delete()
+            .eq('external_locum_id', locumId)
 
         // Then delete the locum record
         const { error } = await supabaseAdmin

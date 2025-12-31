@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HURE Payroll Demo – Allowances</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; background: #f6f1ea; padding: 24px; }
+    h1 { margin-bottom: 8px; }
+    p { color: #555; margin-top: 0; }
+
+    table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 20px; }
+    th, td { border: 1px solid #e2e8f0; padding: 10px; text-align: left; font-size: 14px; }
+    th { background: #f1f5f9; }
+
+    .badge { padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; display: inline-block; }
+    .fixed { background: #e0f2fe; color: #0369a1; }
+    .prorated { background: #fef3c7; color: #92400e; }
+
+    .expand { cursor: pointer; color: #0d9488; font-weight: bold; user-select: none; }
+    .details { display: none; background: #fafafa; }
+
+    .section { padding: 12px; border-bottom: 1px solid #ddd; }
+    .allowances table { width: 100%; margin-top: 8px; }
+    .allowances input { width: 100%; padding: 6px; font-size: 13px; }
+
+    .btn { padding: 6px 10px; background: #0d9488; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+
+    .pillbtn { padding: 8px 14px; background: #16a34a; color: #fff; border: none; border-radius: 999px; cursor: pointer; font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .pillbtn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .banner { margin-top: 14px; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff; color: #0f172a; display: none; }
+    .banner strong { color: #16a34a; }
+
+    .summary { font-weight: bold; margin-top: 8px; }
+
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+    .subnote { margin-top: 6px; font-size: 12px; color: #92400e; }
+    .hint { color: #555; font-size: 13px; }
+
+    /* When finalized, prevent editing (but keep viewing) */
+    .finalized .expand { pointer-events: none; opacity: 0.55; cursor: not-allowed; }
+    .finalized .allowances input,
+    .finalized .allowances button.btn,
+    .finalized #markedByInput,
+    .finalized .paidToggle { pointer-events: none; }
+
+    /* Modal */
+    .modalOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 9999;
+    }
+    .modal {
+      width: min(520px, 96vw);
+      background: #fff;
+      border-radius: 14px;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.18);
+      overflow: hidden;
+    }
+    .modalHeader {
+      padding: 14px 16px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .modalBody { padding: 14px 16px; color: #334155; line-height: 1.35; }
+    .modalActions {
+      padding: 12px 16px;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .btnSecondary {
+      padding: 6px 10px;
+      background: #e2e8f0;
+      color: #0f172a;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .btnDanger {
+      padding: 6px 10px;
+      background: #16a34a;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 800;
+    }
+  </style>
+</head>
+<body>
+
+<h1>HURE Payroll – Demo Table</h1>
+<p>Salaried staff with fixed/prorated base salary and editable allowances (amount + notes).</p>
+
+<div class="controls">
+  <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#555;">
+    Marked by:
+    <input id="markedByInput" type="text" value="Owner/Admin" style="padding:6px; border:1px solid #e2e8f0; border-radius:6px; width:220px;" />
+  </label>
+
+  <button id="finalizeBtn" class="pillbtn" type="button">Mark All as Paid</button>
+  <button id="downloadBtn" class="btn" type="button" style="display:none;">Download Payroll (CSV)</button>
+  <span class="hint">(Finalize payroll run)</span>
+</div>
+
+<div class="subnote"><strong>Note:</strong> This action finalizes payroll, locks all edits, and prepares the list for export.</div>
+
+<div id="finalBanner" class="banner">
+  <strong>Payroll Finalized.</strong> Everything is now read-only and ready to export to an accountant / external payroll software.
+</div>
+
+<table id="payrollTable">
+  <thead>
+    <tr>
+      <th></th>
+      <th>Staff</th>
+      <th>Days Worked</th>
+      <th>Monthly Salary (KSh)</th>
+      <th>Pay Method</th>
+      <th>Base Gross (KSh)</th>
+      <th>Allowances (KSh)</th>
+      <th>Total Gross (KSh)</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <!-- Row 0 -->
+    <tr class="mainRow" data-i="0">
+      <td class="expand" data-action="toggle" data-i="0">+</td>
+      <td>Jane A</td>
+      <td>17.5 / 30</td>
+      <td>30,000</td>
+      <td><span class="badge fixed">Fixed</span></td>
+      <td id="base0">30000</td>
+      <td id="allow0">8000</td>
+      <td id="total0">38000</td>
+      <td>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input class="paidToggle" id="paidCb0" type="checkbox" data-action="paid" data-i="0" />
+          <span id="status0">Unpaid</span>
+        </label>
+      </td>
+    </tr>
+    <tr class="details" id="details0">
+      <td colspan="9">
+        <div class="section">
+          <strong>Base Salary</strong><br />
+          Monthly Salary: 30,000<br />
+          Days Worked: 17.5 / 30<br />
+          Pay Method: Fixed<br />
+          <div class="summary">Base Gross Salary: <span id="baseGross0">30,000</span></div>
+        </div>
+        <div class="section allowances" id="allowances0">
+          <strong>Allowances</strong>
+          <table>
+            <tr><th>Amount (KSh)</th><th>Notes</th></tr>
+            <tr>
+              <td><input type="number" value="5000" class="amt0" data-action="amt" data-i="0" /></td>
+              <td><input type="text" value="House allowance" /></td>
+            </tr>
+            <tr>
+              <td><input type="number" value="3000" class="amt0" data-action="amt" data-i="0" /></td>
+              <td><input type="text" value="Transport allowance" /></td>
+            </tr>
+          </table>
+          <button id="addBtn0" class="btn" type="button" data-action="addAllowance" data-i="0">+ Add Allowance</button>
+          <div class="summary">Total Gross updates automatically</div>
+        </div>
+        <div class="section">
+          <strong>Audit</strong><br />
+          Paid Date: <span id="paidDate0">—</span><br />
+          Marked Paid By: <span id="paidBy0">—</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- Row 1 -->
+    <tr class="mainRow" data-i="1">
+      <td class="expand" data-action="toggle" data-i="1">+</td>
+      <td>Mark B</td>
+      <td>17.5 / 30</td>
+      <td>30,000</td>
+      <td><span class="badge prorated">Prorated</span></td>
+      <td id="base1">17500</td>
+      <td id="allow1">5000</td>
+      <td id="total1">22500</td>
+      <td>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input class="paidToggle" id="paidCb1" type="checkbox" data-action="paid" data-i="1" />
+          <span id="status1">Unpaid</span>
+        </label>
+      </td>
+    </tr>
+    <tr class="details" id="details1">
+      <td colspan="9">
+        <div class="section">
+          <strong>Base Salary</strong><br />
+          Monthly Salary: 30,000<br />
+          Days Worked: 17.5 / 30<br />
+          Pay Method: Prorated<br />
+          <div class="summary">Base Gross Salary: <span id="baseGross1">17,500</span></div>
+        </div>
+        <div class="section allowances" id="allowances1">
+          <strong>Allowances</strong>
+          <table>
+            <tr><th>Amount (KSh)</th><th>Notes</th></tr>
+            <tr>
+              <td><input type="number" value="2000" class="amt1" data-action="amt" data-i="1" /></td>
+              <td><input type="text" value="Travel - outreach clinic" /></td>
+            </tr>
+            <tr>
+              <td><input type="number" value="3000" class="amt1" data-action="amt" data-i="1" /></td>
+              <td><input type="text" value="Bonus top-up" /></td>
+            </tr>
+          </table>
+          <button id="addBtn1" class="btn" type="button" data-action="addAllowance" data-i="1">+ Add Allowance</button>
+          <div class="summary">Total Gross updates automatically</div>
+        </div>
+        <div class="section">
+          <strong>Audit</strong><br />
+          Paid Date: <span id="paidDate1">—</span><br />
+          Marked Paid By: <span id="paidBy1">—</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- Row 2 -->
+    <tr class="mainRow" data-i="2">
+      <td class="expand" data-action="toggle" data-i="2">+</td>
+      <td>Grace C</td>
+      <td>29 / 30</td>
+      <td>45,000</td>
+      <td><span class="badge fixed">Fixed</span></td>
+      <td id="base2">45000</td>
+      <td id="allow2">12000</td>
+      <td id="total2">57000</td>
+      <td>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input class="paidToggle" id="paidCb2" type="checkbox" data-action="paid" data-i="2" />
+          <span id="status2">Unpaid</span>
+        </label>
+      </td>
+    </tr>
+    <tr class="details" id="details2">
+      <td colspan="9">
+        <div class="section">
+          <strong>Base Salary</strong><br />
+          Monthly Salary: 45,000<br />
+          Days Worked: 29 / 30<br />
+          Pay Method: Fixed<br />
+          <div class="summary">Base Gross Salary: <span id="baseGross2">45,000</span></div>
+        </div>
+        <div class="section allowances" id="allowances2">
+          <strong>Allowances</strong>
+          <table>
+            <tr><th>Amount (KSh)</th><th>Notes</th></tr>
+            <tr>
+              <td><input type="number" value="7000" class="amt2" data-action="amt" data-i="2" /></td>
+              <td><input type="text" value="House allowance (updated)" /></td>
+            </tr>
+            <tr>
+              <td><input type="number" value="5000" class="amt2" data-action="amt" data-i="2" /></td>
+              <td><input type="text" value="Transport - extra shifts" /></td>
+            </tr>
+          </table>
+          <button id="addBtn2" class="btn" type="button" data-action="addAllowance" data-i="2">+ Add Allowance</button>
+          <div class="summary">Total Gross updates automatically</div>
+        </div>
+        <div class="section">
+          <strong>Audit</strong><br />
+          Paid Date: <span id="paidDate2">—</span><br />
+          Marked Paid By: <span id="paidBy2">—</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- Row 3 -->
+    <tr class="mainRow" data-i="3">
+      <td class="expand" data-action="toggle" data-i="3">+</td>
+      <td>Peter D</td>
+      <td>22 / 30</td>
+      <td>40,000</td>
+      <td><span class="badge prorated">Prorated</span></td>
+      <td id="base3">29333</td>
+      <td id="allow3">2500</td>
+      <td id="total3">31833</td>
+      <td>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input class="paidToggle" id="paidCb3" type="checkbox" data-action="paid" data-i="3" />
+          <span id="status3">Unpaid</span>
+        </label>
+      </td>
+    </tr>
+    <tr class="details" id="details3">
+      <td colspan="9">
+        <div class="section">
+          <strong>Base Salary</strong><br />
+          Monthly Salary: 40,000<br />
+          Days Worked: 22 / 30<br />
+          Pay Method: Prorated<br />
+          <div class="summary">Base Gross Salary: <span id="baseGross3">29,333</span></div>
+        </div>
+        <div class="section allowances" id="allowances3">
+          <strong>Allowances</strong>
+          <table>
+            <tr><th>Amount (KSh)</th><th>Notes</th></tr>
+            <tr>
+              <td><input type="number" value="1500" class="amt3" data-action="amt" data-i="3" /></td>
+              <td><input type="text" value="Travel reimbursement" /></td>
+            </tr>
+            <tr>
+              <td><input type="number" value="1000" class="amt3" data-action="amt" data-i="3" /></td>
+              <td><input type="text" value="One-off bonus" /></td>
+            </tr>
+          </table>
+          <button id="addBtn3" class="btn" type="button" data-action="addAllowance" data-i="3">+ Add Allowance</button>
+          <div class="summary">Total Gross updates automatically</div>
+        </div>
+        <div class="section">
+          <strong>Audit</strong><br />
+          Paid Date: <span id="paidDate3">—</span><br />
+          Marked Paid By: <span id="paidBy3">—</span>
+        </div>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Confirmation Modal (replaces window.confirm which can be blocked in embedded previews) -->
+<div id="confirmOverlay" class="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+  <div class="modal">
+    <div class="modalHeader" id="confirmTitle">Finalize Payroll</div>
+    <div class="modalBody">
+      Are you sure you want to mark everyone in this list as paid?<br />
+      <span style="display:block; margin-top:8px; font-size:12px; color:#64748b;">
+        This will lock all edits and prepare the list for export.
+      </span>
+    </div>
+    <div class="modalActions">
+      <button id="confirmNo" class="btnSecondary" type="button">No</button>
+      <button id="confirmYes" class="btnDanger" type="button">Yes, Mark All Paid</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const ROW_COUNT = 4;
+  let payrollFinalized = false;
+
+  // Modal state
+  let pendingFinalize = false;
+
+  function openConfirm() {
+    const overlay = document.getElementById('confirmOverlay');
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    pendingFinalize = true;
+    const yesBtn = document.getElementById('confirmYes');
+    if (yesBtn) yesBtn.focus();
+  }
+
+  function closeConfirm() {
+    const overlay = document.getElementById('confirmOverlay');
+    if (!overlay) return;
+    overlay.style.display = 'none';
+    pendingFinalize = false;
+    const finBtn = document.getElementById('finalizeBtn');
+    if (finBtn) finBtn.focus();
+  }
+
+  function toggleDetails(i) {
+    const row = document.getElementById('details' + i);
+    if (!row) return;
+    row.style.display = row.style.display === 'table-row' ? 'none' : 'table-row';
+  }
+
+  function formatKsh(n) {
+    try { return Number(n).toLocaleString('en-KE'); }
+    catch { return String(n); }
+  }
+
+  function recalc(i) {
+    const baseEl = document.getElementById('base' + i);
+    const allowEl = document.getElementById('allow' + i);
+    const totalEl = document.getElementById('total' + i);
+    if (!baseEl || !allowEl || !totalEl) return;
+
+    const base = parseInt(baseEl.textContent, 10) || 0;
+    const inputs = document.querySelectorAll('.amt' + i);
+    let allowanceTotal = 0;
+    inputs.forEach(inp => { allowanceTotal += (parseInt(inp.value, 10) || 0); });
+
+    allowEl.textContent = String(allowanceTotal);
+    totalEl.textContent = String(base + allowanceTotal);
+  }
+
+  function addAllowance(i) {
+    if (payrollFinalized) return;
+
+    const container = document.getElementById('allowances' + i);
+    const table = container ? container.querySelector('table') : null;
+    if (!table) return;
+
+    const row = table.insertRow();
+    const c1 = row.insertCell(0);
+    const c2 = row.insertCell(1);
+    c1.innerHTML = '<input type="number" value="0" class="amt' + i + '" data-action="amt" data-i="' + i + '" />';
+    c2.innerHTML = '<input type="text" placeholder="Allowance notes" />';
+
+    recalc(i);
+  }
+
+  function togglePaid(i, isPaid) {
+    if (payrollFinalized) return;
+
+    const statusEl = document.getElementById('status' + i);
+    const paidDateEl = document.getElementById('paidDate' + i);
+    const paidByEl = document.getElementById('paidBy' + i);
+    if (!statusEl || !paidDateEl || !paidByEl) return;
+
+    const markedByInput = document.getElementById('markedByInput');
+    const markedBy = (markedByInput ? markedByInput.value : '—').trim() || '—';
+
+    statusEl.textContent = isPaid ? 'Paid' : 'Unpaid';
+    if (isPaid) {
+      paidDateEl.textContent = new Date().toLocaleString();
+      paidByEl.textContent = markedBy;
+    } else {
+      paidDateEl.textContent = '—';
+      paidByEl.textContent = '—';
+    }
+  }
+
+  function lockEntireRun(locked) {
+    const banner = document.getElementById('finalBanner');
+    const dl = document.getElementById('downloadBtn');
+    const markedByInput = document.getElementById('markedByInput');
+
+    document.body.classList.toggle('finalized', locked);
+    payrollFinalized = locked;
+
+    if (banner) banner.style.display = locked ? 'block' : 'none';
+    if (dl) dl.style.display = locked ? 'inline-block' : 'none';
+    if (markedByInput) markedByInput.disabled = locked;
+
+    for (let i = 0; i < ROW_COUNT; i++) {
+      const addBtn = document.getElementById('addBtn' + i);
+      const paidCb = document.getElementById('paidCb' + i);
+      if (addBtn) addBtn.disabled = locked;
+      if (paidCb) paidCb.disabled = locked;
+
+      const inputs = document.querySelectorAll('#allowances' + i + ' input');
+      inputs.forEach(inp => { inp.disabled = locked; });
+    }
+
+    const finalizeBtn = document.getElementById('finalizeBtn');
+    if (finalizeBtn) {
+      finalizeBtn.disabled = locked;
+      finalizeBtn.textContent = locked ? 'Payroll Finalized' : 'Mark All as Paid';
+    }
+  }
+
+  function performFinalizeAllPaid() {
+    if (payrollFinalized) return;
+
+    const markedByInput = document.getElementById('markedByInput');
+    const markedBy = (markedByInput ? markedByInput.value : '—').trim() || '—';
+    const stamp = new Date().toLocaleString();
+
+    for (let i = 0; i < ROW_COUNT; i++) {
+      const cb = document.getElementById('paidCb' + i);
+      if (cb) cb.checked = true;
+
+      const statusEl = document.getElementById('status' + i);
+      const paidDateEl = document.getElementById('paidDate' + i);
+      const paidByEl = document.getElementById('paidBy' + i);
+
+      if (statusEl) statusEl.textContent = 'Paid';
+      if (paidDateEl) paidDateEl.textContent = stamp;
+      if (paidByEl) paidByEl.textContent = markedBy;
+    }
+
+    lockEntireRun(true);
+  }
+
+  function buildCSVString() {
+    const rows = [[
+      'Staff','DaysWorked','MonthlySalary','PayMethod','BaseGross','AllowancesTotal','TotalGross','Status','PaidDate','MarkedPaidBy'
+    ]];
+
+    const tbody = document.querySelector('#payrollTable tbody');
+    const mainRows = tbody ? Array.from(tbody.querySelectorAll('tr.mainRow')) : [];
+
+    mainRows.forEach((tr, i) => {
+      const tds = tr.querySelectorAll('td');
+      const staff = (tds[1] && tds[1].textContent ? tds[1].textContent.trim() : '');
+      const daysWorked = (tds[2] && tds[2].textContent ? tds[2].textContent.trim() : '');
+      const monthlySalary = (tds[3] && tds[3].textContent ? tds[3].textContent.trim() : '');
+      const payMethod = (tds[4] && tds[4].textContent ? tds[4].textContent.trim() : '');
+
+      const baseGross = (document.getElementById('base' + i)?.textContent || '').trim();
+      const allowancesTotal = (document.getElementById('allow' + i)?.textContent || '').trim();
+      const totalGross = (document.getElementById('total' + i)?.textContent || '').trim();
+      const status = (document.getElementById('status' + i)?.textContent || '').trim();
+      const paidDate = (document.getElementById('paidDate' + i)?.textContent || '').trim();
+      const paidBy = (document.getElementById('paidBy' + i)?.textContent || '').trim();
+
+      rows.push([staff, daysWorked, monthlySalary, payMethod, baseGross, allowancesTotal, totalGross, status, paidDate, paidBy]);
+    });
+
+    // CSV escaping + newline join (IMPORTANT: use "\\n" literals; do not embed real newlines in quotes)
+    return rows
+      .map(r => r.map(v => {
+        const s = String(v ?? '');
+        if (s.indexOf('"') !== -1 || s.indexOf(',') !== -1 || s.indexOf('\n') !== -1) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      }).join(','))
+      .join('\\n');
+  }
+
+  function downloadCSV() {
+    if (!payrollFinalized) return;
+
+    const csv = buildCSVString();
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.href = url;
+    a.download = 'hure-payroll-' + ts + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // --- Tests ---
+  function runTests() {
+    console.assert(document.getElementById('total0')?.textContent === '38000', 'Row0 total should init to 38000');
+    console.assert(document.getElementById('total1')?.textContent === '22500', 'Row1 total should init to 22500');
+    console.assert(getComputedStyle(document.getElementById('downloadBtn')).display === 'none', 'Download should be hidden before finalize');
+
+    const csv = buildCSVString();
+    const lines = csv.split('\\n');
+    console.assert(lines.length === 1 + ROW_COUNT, 'CSV should have header + ROW_COUNT lines');
+    console.assert(lines[0].startsWith('Staff,DaysWorked,MonthlySalary'), 'CSV header should start correctly');
+
+    // New test: modal exists and opens
+    openConfirm();
+    console.assert(getComputedStyle(document.getElementById('confirmOverlay')).display !== 'none', 'Confirm modal should open');
+    closeConfirm();
+    console.assert(getComputedStyle(document.getElementById('confirmOverlay')).display === 'none', 'Confirm modal should close');
+
+    // New test: finalization locks + download appears
+    lockEntireRun(false);
+    performFinalizeAllPaid();
+    console.assert(payrollFinalized === true, 'Payroll should be finalized after performFinalizeAllPaid');
+    console.assert(getComputedStyle(document.getElementById('downloadBtn')).display !== 'none', 'Download should appear after finalize');
+    console.assert(document.getElementById('paidCb0')?.disabled === true, 'Paid toggle should be disabled after finalize');
+    console.assert(document.getElementById('addBtn0')?.disabled === true, 'Add allowance should be disabled after finalize');
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const finalizeBtn = document.getElementById('finalizeBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    if (finalizeBtn) finalizeBtn.addEventListener('click', () => { if (!payrollFinalized) openConfirm(); });
+    if (downloadBtn) downloadBtn.addEventListener('click', downloadCSV);
+
+    // Modal buttons
+    const noBtn = document.getElementById('confirmNo');
+    const yesBtn = document.getElementById('confirmYes');
+    if (noBtn) noBtn.addEventListener('click', closeConfirm);
+    if (yesBtn) yesBtn.addEventListener('click', () => { closeConfirm(); performFinalizeAllPaid(); });
+
+    // Close modal on overlay click
+    const overlay = document.getElementById('confirmOverlay');
+    if (overlay) overlay.addEventListener('click', (e) => {
+      if (e.target && e.target.id === 'confirmOverlay') closeConfirm();
+    });
+
+    // ESC to close modal
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && pendingFinalize) closeConfirm();
+    });
+
+    // Table interactions
+    const table = document.getElementById('payrollTable');
+
+    if (table) {
+      table.addEventListener('click', (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLElement)) return;
+
+        const action = t.getAttribute('data-action');
+        const iStr = t.getAttribute('data-i');
+        const i = iStr ? parseInt(iStr, 10) : NaN;
+
+        if (action === 'toggle' && Number.isFinite(i)) toggleDetails(i);
+        if (action === 'addAllowance' && Number.isFinite(i)) addAllowance(i);
+      });
+
+      table.addEventListener('input', (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLElement)) return;
+        const action = t.getAttribute('data-action');
+        const iStr = t.getAttribute('data-i');
+        const i = iStr ? parseInt(iStr, 10) : NaN;
+        if (action === 'amt' && Number.isFinite(i)) recalc(i);
+      });
+
+      table.addEventListener('change', (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLInputElement)) return;
+        const action = t.getAttribute('data-action');
+        const iStr = t.getAttribute('data-i');
+        const i = iStr ? parseInt(iStr, 10) : NaN;
+        if (action === 'paid' && Number.isFinite(i)) togglePaid(i, t.checked);
+      });
+    }
+
+    // Init base gross formatting + totals
+    for (let i = 0; i < ROW_COUNT; i++) {
+      const baseEl = document.getElementById('base' + i);
+      const baseGrossEl = document.getElementById('baseGross' + i);
+      if (baseEl && baseGrossEl) baseGrossEl.textContent = formatKsh(baseEl.textContent);
+      recalc(i);
+    }
+
+    runTests();
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,12 @@
+--- Tracing "doctor locum" ---
+Found 1 locums.
+
+Locum: doctor locum (ID: 84c9f65d-79ea-40ac-b707-ef4c65d3710d)
+  Current Locum Location ID: c5551a5a-85c8-4c69-96a5-caa61a9117ce
+  Schedule Block ID:   ff62eee2-929e-4d48-a687-04edf0903821
+  Linked Block:
+    ID: ff62eee2-929e-4d48-a687-04edf0903821
+    Location ID: c5551a5a-85c8-4c69-96a5-caa61a9117ce
+    Location Name: mosomi branch
+  Attendance Records: 1
+  First Att Location ID: c5551a5a-85c8-4c69-96a5-caa61a9117ce

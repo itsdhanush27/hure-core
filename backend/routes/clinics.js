@@ -176,11 +176,16 @@ router.get('/:clinicId/schedule', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
 
-        const { data, error } = await supabaseAdmin
+        let query = supabaseAdmin
             .from('schedule_blocks')
             .select('*, clinic_locations(name), schedule_assignments(*, users(first_name, last_name))')
             .eq('clinic_id', clinicId)
-            .order('date', { ascending: true })
+
+        if (req.query.locationId && req.query.locationId !== 'all') {
+            query = query.eq('location_id', req.query.locationId)
+        }
+
+        const { data, error } = await query.order('date', { ascending: true })
 
         if (error) {
             console.error('Schedule fetch error:', error)
@@ -255,10 +260,20 @@ router.get('/:clinicId/payroll-stats', authMiddleware, async (req, res) => {
         // Filter by date range only
         let query = supabaseAdmin
             .from('attendance')
-            .select('*, user:user_id(first_name, last_name, pay_rate, pay_type)')
+            .select('*, user:user_id(first_name, last_name, pay_rate, pay_type, location_id)')
 
         if (startDate) query = query.gte('date', startDate)
         if (endDate) query = query.lte('date', endDate)
+
+        if (req.query.locationId && req.query.locationId !== 'all') {
+            // Filter by user location using !inner join
+            query = supabaseAdmin
+                .from('attendance')
+                .select('*, user:user_id!inner(first_name, last_name, pay_rate, pay_type, location_id)')
+                .gte('date', startDate || '2025-01-01')
+                .lte('date', endDate || '2025-12-31')
+                .eq('user.location_id', req.query.locationId)
+        }
 
         const { data: attendance, error } = await query
 
@@ -319,35 +334,8 @@ router.get('/:clinicId/payroll-stats', authMiddleware, async (req, res) => {
 // ATTENDANCE ENDPOINTS
 // ============================================
 
-// GET /api/clinics/:clinicId/attendance - Get attendance records
-router.get('/:clinicId/attendance', authMiddleware, async (req, res) => {
-    try {
-        const { clinicId } = req.params
-        const { startDate, endDate } = req.query
-
-        console.log('📊 Attendance fetch for date range:', startDate, 'to', endDate)
-
-        // Use explicit foreign key for user relationship
-        let query = supabaseAdmin
-            .from('attendance')
-            .select('*, user:user_id(first_name, last_name, job_title)')
-
-        if (startDate) query = query.gte('date', startDate)
-        if (endDate) query = query.lte('date', endDate)
-
-        const { data, error } = await query.order('date', { ascending: false })
-
-        if (error) {
-            console.error('Attendance fetch error:', error)
-            return res.status(500).json({ error: 'Failed to fetch attendance' })
-        }
-
-        res.json({ data })
-    } catch (err) {
-        console.error('Attendance error:', err)
-        res.status(500).json({ error: 'Failed to fetch attendance' })
-    }
-})
+// ATTENDANCE ENDPOINTS moved to routes/attendance.js
+// router.get('/:clinicId/attendance', ... commented out to fix shadowing bug
 
 // ============================================
 // LEAVE ENDPOINTS
@@ -363,12 +351,25 @@ router.get('/:clinicId/leave', authMiddleware, async (req, res) => {
         console.log('   Clinic ID:', clinicId)
         console.log('   Status filter:', status || 'all')
 
+        // Initialize query (fetch user details)
+        // Note: For filtering by location, we need !inner join.
         let query = supabaseAdmin
             .from('leave_requests')
-            .select('*, user:user_id(first_name, last_name, job_title), reviewer:reviewed_by(first_name, last_name)')
+            .select('*, user:user_id(first_name, last_name, job_title, location_id), reviewer:reviewed_by(first_name, last_name)')
             .eq('clinic_id', clinicId)
 
         if (status) query = query.eq('status', status)
+
+        if (req.query.locationId && req.query.locationId !== 'all') {
+            // Rebuild query with !inner join to filter by user location
+            query = supabaseAdmin
+                .from('leave_requests')
+                .select('*, user:user_id!inner(first_name, last_name, job_title, location_id), reviewer:reviewed_by(first_name, last_name)')
+                .eq('clinic_id', clinicId)
+                .eq('user.location_id', req.query.locationId)
+
+            if (status) query = query.eq('status', status)
+        }
 
         const { data, error } = await query.order('created_at', { ascending: false })
 
@@ -472,13 +473,19 @@ router.get('/:clinicId/staff', authMiddleware, async (req, res) => {
 
         let query = supabaseAdmin
             .from('users')
-            .select('*, clinic_locations(name)')
+            .select('*, clinics!users_clinic_id_fkey(name), clinic_locations(name)')
             .eq('clinic_id', clinicId)
             .order('created_at', { ascending: false })
 
         // Only filter out owner if not explicitly including
         if (!includeOwner) {
             query = query.neq('role', 'owner')
+        }
+
+        if (req.query.locationId && req.query.locationId !== 'all') {
+            const { locationId } = req.query
+            // For schedule, block itself has location_id
+            query = query.eq('location_id', locationId)
         }
 
         const { data, error } = await query
@@ -599,7 +606,27 @@ router.delete('/:clinicId/locations/:locationId', authMiddleware, async (req, re
             return res.status(400).json({ error: `Cannot delete location. There are ${scheduleCount} schedule blocks associated with this location. Please delete the schedules first.` })
         }
 
-        // 3. Delete the location
+        // 3. Unlink attendance records (set location to null) to allow deletion
+        console.log('Unlinking location', locationId, 'from attendance records...')
+        const { error: attError } = await supabaseAdmin
+            .from('attendance')
+            .update({ location_id: null })
+            .eq('location_id', locationId)
+
+        if (attError) {
+            console.error('Failed to unlink attendance:', attError)
+            // If column is NOT NULL, we can't unlink. 
+            // We'll let it proceed to delete and if it fails, the user gets the FK error.
+        }
+
+        // 3b. Unlink payroll records (set location to null) just in case
+        console.log('Unlinking location', locationId, 'from payroll records...')
+        await supabaseAdmin
+            .from('payroll_records')
+            .update({ location_id: null })
+            .eq('location_id', locationId)
+
+        // 4. Delete the location
         const { error } = await supabaseAdmin
             .from('clinic_locations')
             .delete()

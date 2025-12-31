@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 
+// FORCE RELOAD: 2025-12-31 17:09
 // Import routes
 import authRoutes from './routes/auth.js'
 import onboardRoutes from './routes/onboard.js'
@@ -78,7 +79,9 @@ app.use((req, res) => {
 // Start server if run directly (local development)
 if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     app.listen(PORT, () => {
-        console.log(`\n🚀 HURE Core Backend running on http://localhost:${PORT}`)
+        console.log(`\n🚀 CHECK_Server running on port ${PORT} - v4 FINAL CHECK`)
+        console.log(`   Time: ${new Date().toISOString()}`)
+        console.log(`   URL: http://localhost:${PORT}`)
         console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`)
     })
 }

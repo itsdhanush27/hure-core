@@ -1,0 +1,25 @@
+--- Checking Schema ---
+
+Table: users
+  Status: Exists
+  Columns: id, clinic_id, location_id, email, username, password_hash, first_name, last_name, phone, role, account_type, job_title, pay_type, pay_rate, hire_date, is_active, last_login_at, created_at, updated_at, invite_token, invite_status, employment_type, permission_role, system_role, status
+
+Table: leave_requests
+  Status: Exists
+  Columns: id, clinic_id, user_id, leave_type, start_date, end_date, reason, status, reviewed_by, reviewed_at, rejection_notes, created_at
+
+Table: leave_types
+  Status: Could not find the table 'public.leave_types' in the schema cache
+
+Table: external_locums
+  Status: Exists
+  Columns: id, clinic_id, schedule_block_id, name, phone, role, daily_rate, supervisor_id, notes, created_at, created_by, updated_at, location_id
+
+Table: payroll_runs
+  Status: Could not find the table 'public.payroll_runs' in the schema cache
+
+Table: payroll_items
+  Status: Could not find the table 'public.payroll_items' in the schema cache
+
+Table: allowances
+  Status: Could not find the table 'public.allowances' in the schema cache

@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HURE Payroll — React + Tailwind Preview</title>
+
+    <!-- Tailwind CDN (for demo preview only) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- React 18 + ReactDOM 18 -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel for in-browser JSX transform (preview only) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+
+  <body class="bg-[#f6f1ea]">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+
+      const formatKsh = (n) => {
+        const num = Number(n || 0);
+        try { return num.toLocaleString("en-KE"); }
+        catch { return String(num); }
+      };
+
+      const nowStamp = () => new Date().toLocaleString();
+
+      const buildCsv = (rows) => {
+        const header = [
+          "Staff","DaysWorked","MonthlySalary","PayMethod","BaseGross",
+          "AllowancesTotal","TotalGross","Status","PaidDate","MarkedPaidBy"
+        ];
+        const csvRows = [header, ...rows].map((r) =>
+          r.map((v) => {
+            const s = String(v ?? "");
+            if (s.includes('"') || s.includes(",") || s.includes("\\n")) return '"' + s.replace(/"/g,'""') + '"';
+            return s;
+          }).join(",")
+        );
+        return csvRows.join("\\n");
+      };
+
+      const downloadTextFile = (content, filename, mime = "text/csv;charset=utf-8;") => {
+        const blob = new Blob([content], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      };
+
+      const Badge = ({ kind }) => {
+        const isFixed = kind === "Fixed";
+        return (
+          <span className={[
+            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold",
+            isFixed ? "bg-sky-100 text-sky-700" : "bg-amber-100 text-amber-800",
+          ].join(" ")}>
+            {kind}
+          </span>
+        );
+      };
+
+      
+      function HurePayrollDemo() {
+        const [markedBy, setMarkedBy] = useState("Owner/Admin");
+        const [finalized, setFinalized] = useState(false);
+
+        // Month units = total payable units for proration in the period (e.g., 30 for a 30-day month)
+        const [monthUnits, setMonthUnits] = useState(30);
+
+        /**
+         * Demo data now includes Leave + Attendance breakdown:
+         * - workedUnits: attendance-derived (1, 0.5, 0)
+         * - paidLeaveUnits: approved paid leave (1, 0.5)
+         * - unpaidLeaveUnits: approved unpaid leave (forces units to 0 for those days)
+         * - absentUnits: 0 units (not leave unless converted)
+         *
+         * Paid Units used for pay:
+         *   paidUnits = workedUnits + paidLeaveUnits
+         *   (unpaid leave + absent contribute 0)
+         *
+         * Fixed vs Prorated:
+         *   Fixed    -> payableBase = monthlySalary (leave shown for reporting only)
+         *   Prorated -> payableBase = monthlySalary * (paidUnits / monthUnits)
+         */
+        const [rows, setRows] = useState(() => ([
+          {
+            id: 0, staff: "Jane A",
+            monthlySalary: 30000,
+            payMethod: "Fixed",
+            workedUnits: 17.5,
+            paidLeaveUnits: 2.0,
+            unpaidLeaveUnits: 0.0,
+            absentUnits: 0.5,
+            allowances: [
+              { amount: 5000, notes: "House allowance" },
+              { amount: 3000, notes: "Transport allowance" },
+            ],
+            isPaid: false, paidDate: "—", paidBy: "—", expanded: false,
+          },
+          {
+            id: 1, staff: "Mark B",
+            monthlySalary: 30000,
+            payMethod: "Prorated",
+            workedUnits: 17.5,
+            paidLeaveUnits: 2.0,
+            unpaidLeaveUnits: 1.0,
+            absentUnits: 0.0,
+            allowances: [
+              { amount: 2000, notes: "Travel - outreach clinic" },
+              { amount: 3000, notes: "Bonus top-up" },
+            ],
+            isPaid: false, paidDate: "—", paidBy: "—", expanded: false,
+          },
+          {
+            id: 2, staff: "Grace C",
+            monthlySalary: 45000,
+            payMethod: "Fixed",
+            workedUnits: 29.0,
+            paidLeaveUnits: 0.0,
+            unpaidLeaveUnits: 0.0,
+            absentUnits: 0.0,
+            allowances: [
+              { amount: 7000, notes: "House allowance (updated)" },
+              { amount: 5000, notes: "Transport - extra shifts" },
+            ],
+            isPaid: false, paidDate: "—", paidBy: "—", expanded: false,
+          },
+          {
+            id: 3, staff: "Peter D",
+            monthlySalary: 40000,
+            payMethod: "Prorated",
+            workedUnits: 22.0,
+            paidLeaveUnits: 0.5,
+            unpaidLeaveUnits: 0.0,
+            absentUnits: 1.0,
+            allowances: [
+              { amount: 1500, notes: "Travel reimbursement" },
+              { amount: 1000, notes: "One-off bonus" },
+            ],
+            isPaid: false, paidDate: "—", paidBy: "—", expanded: false,
+          },
+        ]));
+
+        const computedById = useMemo(() => {
+          const map = new Map();
+          rows.forEach((r) => {
+            const allowancesTotal = r.allowances.reduce((sum, a) => sum + (parseInt(a.amount, 10) || 0), 0);
+
+            // Paid units used for salary proration
+            const paidUnits = (Number(r.workedUnits) || 0) + (Number(r.paidLeaveUnits) || 0);
+
+            // Payable base salary
+            let payableBase = Number(r.monthlySalary) || 0;
+            if (r.payMethod === "Prorated") {
+              const denom = Number(monthUnits) || 0;
+              payableBase = denom > 0 ? payableBase * (paidUnits / denom) : 0;
+            }
+
+            // Keep whole shilling in demo (round to nearest)
+            payableBase = Math.round(payableBase);
+
+            const totalGross = payableBase + allowancesTotal;
+
+            map.set(r.id, { allowancesTotal, paidUnits, payableBase, totalGross });
+          });
+          return map;
+        }, [rows, monthUnits]);
+
+        const toggleExpanded = (id) => {
+          if (finalized) return;
+          setRows((prev) => prev.map((r) => (r.id === id ? { ...r, expanded: !r.expanded } : r)));
+        };
+
+        const setAllowanceAmount = (rowId, idx, value) => {
+          if (finalized) return;
+          setRows((prev) =>
+            prev.map((r) => {
+              if (r.id !== rowId) return r;
+              const nextAllowances = r.allowances.map((a, i) => (i === idx ? { ...a, amount: value } : a));
+              return { ...r, allowances: nextAllowances };
+            })
+          );
+        };
+
+        const setAllowanceNotes = (rowId, idx, value) => {
+          if (finalized) return;
+          setRows((prev) =>
+            prev.map((r) => {
+              if (r.id !== rowId) return r;
+              const nextAllowances = r.allowances.map((a, i) => (i === idx ? { ...a, notes: value } : a));
+              return { ...r, allowances: nextAllowances };
+            })
+          );
+        };
+
+        const addAllowance = (rowId) => {
+          if (finalized) return;
+          setRows((prev) =>
+            prev.map((r) =>
+              r.id === rowId
+                ? { ...r, allowances: [...r.allowances, { amount: 0, notes: "" }], expanded: true }
+                : r
+            )
+          );
+        };
+
+        const togglePaid = (rowId, checked) => {
+          if (finalized) return;
+          const who = (markedBy || "—").trim() || "—";
+          setRows((prev) =>
+            prev.map((r) => {
+              if (r.id !== rowId) return r;
+              if (!checked) return { ...r, isPaid: false, paidDate: "—", paidBy: "—" };
+              return { ...r, isPaid: true, paidDate: nowStamp(), paidBy: who };
+            })
+          );
+        };
+
+        const finalizeAllPaid = () => {
+          if (finalized) return;
+          const ok = window.confirm("Are you sure you want to mark everyone in this list as paid?");
+          if (!ok) return;
+
+          const who = (markedBy || "—").trim() || "—";
+          const stamp = nowStamp();
+
+          setRows((prev) =>
+            prev.map((r) => ({
+              ...r,
+              isPaid: true,
+              paidDate: stamp,
+              paidBy: who,
+              expanded: false,
+            }))
+          );
+          setFinalized(true);
+        };
+
+        const downloadCSV = () => {
+          if (!finalized) return;
+
+          const csvRows = rows.map((r) => {
+            const c = computedById.get(r.id) || { allowancesTotal: 0, paidUnits: 0, payableBase: 0, totalGross: 0 };
+            return [
+              r.staff,
+              `${c.paidUnits} / ${monthUnits}`,
+              String(r.monthlySalary ?? ""),
+              r.payMethod,
+              String(c.payableBase ?? ""),
+              String(c.allowancesTotal ?? ""),
+              String(c.totalGross ?? ""),
+              r.isPaid ? "Paid" : "Unpaid",
+              r.paidDate,
+              r.paidBy,
+            ];
+          });
+
+          const csv = buildCsv(csvRows);
+          const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+          downloadTextFile(csv, `hure-payroll-${ts}.csv`);
+        };
+
+        return (
+          <div className="min-h-screen bg-[#f6f1ea] p-6">
+            <div className="mx-auto max-w-6xl">
+              <h1 className="text-2xl font-semibold text-slate-900">HURE Payroll – Preview (Attendance + Leave)</h1>
+              <p className="mt-1 text-sm text-slate-600">
+                Paid Units = Worked Units + Paid Leave Units. Unpaid Leave + Absent contribute 0. Fixed salaries ignore units for pay (reporting only).
+              </p>
+
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <span className="whitespace-nowrap">Marked by:</span>
+                  <input
+                    value={markedBy}
+                    onChange={(e) => setMarkedBy(e.target.value)}
+                    disabled={finalized}
+                    className="w-56 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:ring-2 focus:ring-teal-300 disabled:cursor-not-allowed disabled:opacity-70"
+                    placeholder="Owner/Admin"
+                  />
+                </label>
+
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <span className="whitespace-nowrap">Month units:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={monthUnits}
+                    onChange={(e) => setMonthUnits(Math.max(1, parseInt(e.target.value || "30", 10)))}
+                    disabled={finalized}
+                    className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:ring-2 focus:ring-teal-300 disabled:cursor-not-allowed disabled:opacity-70"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={finalizeAllPaid}
+                  disabled={finalized}
+                  className={[
+                    "rounded-full px-4 py-2 text-sm font-extrabold text-white shadow-sm",
+                    finalized ? "cursor-not-allowed bg-emerald-600/60" : "bg-emerald-600 hover:bg-emerald-500",
+                  ].join(" ")}
+                >
+                  {finalized ? "Payroll Finalized" : "Mark All as Paid"}
+                </button>
+
+                {finalized && (
+                  <button
+                    type="button"
+                    onClick={downloadCSV}
+                    className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-500"
+                  >
+                    Download Payroll (CSV)
+                  </button>
+                )}
+
+                <span className="text-sm text-slate-500">(Demo action with confirmation)</span>
+              </div>
+
+              <div className="mt-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-amber-800 shadow-sm">
+                <strong className="font-semibold">Payroll merge rule:</strong>{" "}
+                Paid Leave overrides attendance as paid units; Unpaid Leave forces 0 paid units; otherwise use Attendance units.
+              </div>
+
+              {finalized && (
+                <div className="mt-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 shadow-sm">
+                  <strong className="text-emerald-600">Payroll Finalized.</strong>{" "}
+                  Everything is now read-only and ready to export to an accountant / external payroll software.
+                </div>
+              )}
+
+              <div className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <table className="w-full border-collapse">
+                  <thead className="bg-slate-50">
+                    <tr className="text-left text-sm text-slate-700">
+                      <th className="w-10 border-b border-slate-200 px-3 py-3" />
+                      <th className="border-b border-slate-200 px-3 py-3">Staff</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Paid Units / Month</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Monthly Salary (KSh)</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Pay Method</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Payable Base (KSh)</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Allowances (KSh)</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Total Gross (KSh)</th>
+                      <th className="border-b border-slate-200 px-3 py-3">Status</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {rows.map((r) => {
+                      const c = computedById.get(r.id) || { allowancesTotal: 0, paidUnits: 0, payableBase: 0, totalGross: 0 };
+
+                      return (
+                        <React.Fragment key={r.id}>
+                          <tr className="text-sm text-slate-800">
+                            <td className="border-b border-slate-200 px-3 py-3 align-top">
+                              <button
+                                type="button"
+                                onClick={() => toggleExpanded(r.id)}
+                                disabled={finalized}
+                                className={[
+                                  "select-none font-extrabold",
+                                  finalized ? "cursor-not-allowed text-teal-600/50" : "text-teal-600 hover:text-teal-700",
+                                ].join(" ")}
+                                aria-label={r.expanded ? "Collapse" : "Expand"}
+                              >
+                                {r.expanded ? "–" : "+"}
+                              </button>
+                            </td>
+
+                            <td className="border-b border-slate-200 px-3 py-3">{r.staff}</td>
+                            <td className="border-b border-slate-200 px-3 py-3">
+                              <span className="font-semibold text-slate-900">{c.paidUnits}</span>{" "}
+                              <span className="text-slate-500">/ {monthUnits}</span>
+                            </td>
+                            <td className="border-b border-slate-200 px-3 py-3">{formatKsh(r.monthlySalary)}</td>
+                            <td className="border-b border-slate-200 px-3 py-3"><Badge kind={r.payMethod} /></td>
+                            <td className="border-b border-slate-200 px-3 py-3">{formatKsh(c.payableBase)}</td>
+                            <td className="border-b border-slate-200 px-3 py-3">{formatKsh(c.allowancesTotal)}</td>
+                            <td className="border-b border-slate-200 px-3 py-3">{formatKsh(c.totalGross)}</td>
+                            <td className="border-b border-slate-200 px-3 py-3">
+                              <label className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={r.isPaid}
+                                  disabled={finalized}
+                                  onChange={(e) => togglePaid(r.id, e.target.checked)}
+                                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-2 focus:ring-emerald-200 disabled:cursor-not-allowed"
+                                />
+                                <span className="text-sm">{r.isPaid ? "Paid" : "Unpaid"}</span>
+                              </label>
+                            </td>
+                          </tr>
+
+                          {r.expanded && (
+                            <tr>
+                              <td colSpan={9} className="border-b border-slate-200 bg-slate-50 px-3 py-4">
+                                <div className="grid gap-4 md:grid-cols-3">
+                                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="text-sm font-semibold text-slate-900">Units Breakdown</div>
+                                    <div className="mt-2 space-y-1 text-sm text-slate-700">
+                                      <div>Worked Units (attendance): <span className="font-semibold text-slate-900">{r.workedUnits}</span></div>
+                                      <div>Paid Leave Units: <span className="font-semibold text-slate-900">{r.paidLeaveUnits}</span></div>
+                                      <div>Unpaid Leave Units: <span className="font-semibold text-slate-900">{r.unpaidLeaveUnits}</span></div>
+                                      <div>Absent Units: <span className="font-semibold text-slate-900">{r.absentUnits}</span></div>
+                                      <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                                        <div className="font-semibold text-slate-900">Paid Units (used for pay)</div>
+                                        <div className="text-slate-700">
+                                          Paid Units = Worked ({r.workedUnits}) + Paid Leave ({r.paidLeaveUnits}) ={" "}
+                                          <span className="font-semibold text-slate-900">{c.paidUnits}</span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="text-sm font-semibold text-slate-900">Pay Calculation</div>
+                                    <div className="mt-2 space-y-1 text-sm text-slate-700">
+                                      <div>Monthly Salary: <span className="font-semibold text-slate-900">{formatKsh(r.monthlySalary)}</span></div>
+                                      <div>Pay Method: <span className="font-semibold text-slate-900">{r.payMethod}</span></div>
+                                      {r.payMethod === "Fixed" ? (
+                                        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                                          <div className="font-semibold text-slate-900">Fixed</div>
+                                          <div className="text-slate-700">Payable Base = full monthly salary (units shown for reporting only).</div>
+                                        </div>
+                                      ) : (
+                                        <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                                          <div className="font-semibold text-slate-900">Prorated</div>
+                                          <div className="text-slate-700">
+                                            Payable Base = Monthly Salary × (Paid Units / Month Units)
+                                          </div>
+                                          <div className="text-slate-700">
+                                            = {formatKsh(r.monthlySalary)} × ({c.paidUnits} / {monthUnits}) ={" "}
+                                            <span className="font-semibold text-slate-900">{formatKsh(c.payableBase)}</span>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="text-sm font-semibold text-slate-900">Allowances + Audit</div>
+
+                                    <div className="mt-3 overflow-hidden rounded-lg border border-slate-200">
+                                      <table className="w-full text-sm">
+                                        <thead className="bg-slate-50 text-slate-700">
+                                          <tr>
+                                            <th className="border-b border-slate-200 px-3 py-2">Amount (KSh)</th>
+                                            <th className="border-b border-slate-200 px-3 py-2">Notes</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {r.allowances.map((a, idx) => (
+                                            <tr key={idx} className="bg-white">
+                                              <td className="border-b border-slate-200 px-3 py-2">
+                                                <input
+                                                  type="number"
+                                                  value={a.amount}
+                                                  disabled={finalized}
+                                                  onChange={(e) => setAllowanceAmount(r.id, idx, e.target.value)}
+                                                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-teal-200 disabled:cursor-not-allowed disabled:opacity-70"
+                                                />
+                                              </td>
+                                              <td className="border-b border-slate-200 px-3 py-2">
+                                                <input
+                                                  type="text"
+                                                  value={a.notes}
+                                                  disabled={finalized}
+                                                  onChange={(e) => setAllowanceNotes(r.id, idx, e.target.value)}
+                                                  placeholder="Allowance notes"
+                                                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-teal-200 disabled:cursor-not-allowed disabled:opacity-70"
+                                                />
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+
+                                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => addAllowance(r.id)}
+                                        disabled={finalized}
+                                        className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-70"
+                                      >
+                                        + Add Allowance
+                                      </button>
+                                      <div className="text-sm font-semibold text-slate-800">
+                                        Allowances: {formatKsh(c.allowancesTotal)}
+                                      </div>
+                                      <div className="text-sm font-semibold text-slate-800">
+                                        Total Gross: {formatKsh(c.totalGross)}
+                                      </div>
+                                    </div>
+
+                                    <div className="mt-3 space-y-1 text-sm text-slate-700">
+                                      <div>Paid Date: <span className="text-slate-900">{r.paidDate}</span></div>
+                                      <div>Marked Paid By: <span className="text-slate-900">{r.paidBy}</span></div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 text-xs text-slate-600">
+                Next step: make Leave tab generate “Paid Leave Units / Unpaid Leave Units” per employee per day, then payroll only consumes the merged totals.
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<HurePayrollDemo />);
+    </script>
+  </body>
+</html>

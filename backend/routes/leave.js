@@ -108,4 +108,66 @@ router.patch('/:id', authMiddleware, async (req, res) => {
     }
 })
 
+// GET /api/clinics/:clinicId/leave/types
+router.get('/types', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+        const { data, error } = await supabaseAdmin
+            .from('leave_types')
+            .select('*')
+            .eq('clinic_id', clinicId)
+            .order('name')
+
+        if (error) throw error
+        res.json({ data })
+    } catch (err) {
+        console.error('Fetch leave types error:', err)
+        res.status(500).json({ error: 'Failed to fetch leave types' })
+    }
+})
+
+// POST /api/clinics/:clinicId/leave/types
+router.post('/types', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+        const { name, isPaid, days } = req.body
+
+        const { data, error } = await supabaseAdmin
+            .from('leave_types')
+            .insert({
+                clinic_id: clinicId,
+                name,
+                is_paid: isPaid,
+                allowance_days: days,
+                allocation_type: 'annual' // Simplified for now
+            })
+            .select()
+            .single()
+
+        if (error) throw error
+        res.json({ success: true, data })
+    } catch (err) {
+        console.error('Create leave type error:', err)
+        res.status(500).json({ error: 'Failed to create leave type' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/leave/types/:id
+router.delete('/types/:id', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, id } = req.params
+        const { error } = await supabaseAdmin
+            .from('leave_types')
+            .delete()
+            .eq('id', id)
+            .eq('clinic_id', clinicId)
+
+        if (error) throw error
+        res.json({ success: true })
+    } catch (err) {
+        console.error('Delete leave type error:', err)
+        res.status(500).json({ error: 'Failed to delete leave type' })
+    }
+})
+
 export default router
