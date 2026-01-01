@@ -704,46 +704,8 @@ router.patch('/:clinicId/leave/:leaveId', authMiddleware, async (req, res) => {
 // STAFF ENDPOINTS
 // ============================================
 
-// GET /api/clinics/:clinicId/staff - Get all staff
-router.get('/:clinicId/staff', authMiddleware, async (req, res) => {
-    try {
-        const { clinicId } = req.params
-        const { includeOwner } = req.query
+// Staff routes have been moved to routes/staff.js to prevent conflicts
 
-        console.log('📊 Staff fetch for clinic:', clinicId)
-
-        let query = supabaseAdmin
-            .from('users')
-            .select('*, clinics!users_clinic_id_fkey(name), clinic_locations(name)')
-            .eq('clinic_id', clinicId)
-            .order('created_at', { ascending: false })
-
-        // Only filter out owner if not explicitly including
-        if (!includeOwner) {
-            query = query.neq('role', 'owner')
-        }
-
-        if (req.query.locationId && req.query.locationId !== 'all') {
-            const { locationId } = req.query
-            // For schedule, block itself has location_id
-            query = query.eq('location_id', locationId)
-        }
-
-        const { data, error } = await query
-
-        if (error) {
-            console.error('Staff fetch error:', error)
-            return res.status(500).json({ error: 'Failed to fetch staff' })
-        }
-
-        console.log('📊 Staff found:', data?.length || 0, 'users')
-
-        res.json({ data })
-    } catch (err) {
-        console.error('Staff error:', err)
-        res.status(500).json({ error: 'Failed to fetch staff' })
-    }
-})
 
 // Staff routes have been moved to routes/staff.js to prevent conflicts
 
