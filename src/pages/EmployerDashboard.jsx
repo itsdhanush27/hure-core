@@ -136,6 +136,7 @@ export default function EmployerDashboard() {
                         orgVerificationStatus: data.clinic.org_verification_status || 'pending',
                         business_reg_no: data.clinic.business_reg_no || '',
                         business_reg_doc: data.clinic.business_reg_doc || null,
+                        kra_pin: data.clinic.kra_pin || '', // Capture KRA PIN
                         facility_license_expiry: data.clinic.facility_license_expiry || null, // For backward compatibility if needed
                     }))
                 }
@@ -1202,6 +1203,18 @@ export default function EmployerDashboard() {
         const [facForm, setFacForm] = useState({ locationId: '', license_no: '', licensing_body: '', expiry_date: '' })
         const [submitting, setSubmitting] = useState(false)
         const [uploading, setUploading] = useState(false)
+
+        // Populate form when org data is loaded
+        useEffect(() => {
+            if (org) {
+                setOrgForm(prev => ({
+                    ...prev,
+                    kra_pin: org.kra_pin || '',
+                    business_reg_no: org.business_reg_no || '',
+                    business_reg_doc: org.business_reg_doc || null,
+                }))
+            }
+        }, [org])
 
         // Calculate days until expiry
         const getDaysUntilExpiry = (expiryDate) => {
