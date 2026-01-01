@@ -79,6 +79,21 @@ router.post('/register', async (req, res) => {
             return res.status(500).json({ error: 'Failed to create user' })
         }
 
+        // Create a default location for this new clinic
+        const { error: locationError } = await supabaseAdmin
+            .from('clinic_locations')
+            .insert({
+                clinic_id: clinic.id,
+                name: 'Main Location',
+                is_primary: true,
+                facility_verification_status: 'pending'
+            })
+
+        if (locationError) {
+            console.error('Default location creation error:', locationError)
+            // Non-fatal: continue without default location
+        }
+
         res.json({
             success: true,
             clinicId: clinic.id,
