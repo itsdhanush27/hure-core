@@ -1,4 +1,5 @@
 import express from 'express'
+import crypto from 'crypto'
 import { supabaseAdmin } from '../lib/supabase.js'
 import { authMiddleware, requirePermission } from '../lib/auth.js'
 
@@ -261,7 +262,7 @@ router.get('/', authMiddleware, async (req, res) => {
                 paid_by: existing?.paid_by,
                 breakdown: units.breakdown || {}
             }
-            if (existing?.id) itemPayload.id = existing.id
+            itemPayload.id = existing?.id || crypto.randomUUID()
             upsertData.push(itemPayload)
         }
 
@@ -322,7 +323,7 @@ router.get('/', authMiddleware, async (req, res) => {
                 paid_at: existing?.paid_at,
                 paid_by: existing?.paid_by
             }
-            if (existing?.id) itemPayload.id = existing.id
+            itemPayload.id = existing?.id || crypto.randomUUID()
             upsertData.push(itemPayload)
         }
 

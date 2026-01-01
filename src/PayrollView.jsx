@@ -196,7 +196,7 @@ export default function PayrollView({ clinicId, token, locationId }) {
             c.worked_units, c.paidUnits, c.period_units,
             c.salary, c.pay_method, c.payable_base,
             c.allowanceTotal, c.totalGross,
-            c.is_paid ? "Paid" : "Unpaid", c.paid_at ? new Date(c.paid_at).toLocaleDateString() : "-", c.paid_by || "-"
+            c.is_paid ? "Paid" : "Unpaid", c.paid_at ? new Date(c.paid_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : "-", c.paid_by || "-"
         ])].map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","));
 
         const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
@@ -213,7 +213,7 @@ export default function PayrollView({ clinicId, token, locationId }) {
     if (error) return <div className="p-6 text-red-600">Error: {error}</div>;
 
     return (
-        <div className="bg-[#f6f1ea] rounded-xl p-6 min-h-[500px]">
+        <div className="bg-slate-50 rounded-xl p-6 min-h-[500px]">
             <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                 <div>
                     <h2 className="text-lg font-bold text-slate-800">Payroll Run</h2>
@@ -381,6 +381,44 @@ export default function PayrollView({ clinicId, token, locationId }) {
                 </table>
                 {computedItems.length === 0 && !loading && (
                     <div className="p-8 text-center text-slate-500">No data found.</div>
+                )}
+            </div>
+
+            {/* External Staff Section */}
+            <div className="mt-8 border-t pt-6">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">External Staff (Locums)</h3>
+                <p className="text-sm text-slate-500 mb-4">Daily workers paid on the day of shift. For record-keeping only - not processed through payroll.</p>
+                {computedItems.filter(i => i.pay_method === 'daily').length > 0 ? (
+                    <table className="w-full text-sm">
+                        <thead className="bg-slate-100">
+                            <tr>
+                                <th className="px-3 py-2 text-left">Staff</th>
+                                <th className="px-3 py-2 text-left">Role</th>
+                                <th className="px-3 py-2 text-center">Status</th>
+                                <th className="px-3 py-2 text-right">Daily Rate</th>
+                                <th className="px-3 py-2 text-right">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {computedItems.filter(i => i.pay_method === 'daily').map(item => (
+                                <tr key={item.id} className="border-b hover:bg-slate-50">
+                                    <td className="px-3 py-2 font-medium">{item.name}</td>
+                                    <td className="px-3 py-2 text-slate-600">{item.role || '-'}</td>
+                                    <td className="px-3 py-2 text-center">
+                                        <span className={`px-2 py-0.5 rounded text-xs ${item.worked_units > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                            {item.worked_units > 0 ? 'Worked' : 'No-Show'}
+                                        </span>
+                                    </td>
+                                    <td className="px-3 py-2 text-right">{formatKsh(item.rate)}</td>
+                                    <td className="px-3 py-2 text-right font-medium">{formatKsh(item.totalGross)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                ) : (
+                    <div className="p-6 text-center text-slate-400 border border-dashed rounded-lg">
+                        No external staff found for this period. Add locums via Schedule → Manage coverage.
+                    </div>
                 )}
             </div>
         </div>

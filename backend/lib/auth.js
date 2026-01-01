@@ -17,6 +17,15 @@ export const ROLE_PERMISSIONS = {
     'Employer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings']
 }
 
+// Get all unique permissions across all roles
+export function getAllPermissions() {
+    const allPerms = new Set()
+    Object.values(ROLE_PERMISSIONS).forEach(perms => {
+        perms.forEach(p => allPerms.add(p))
+    })
+    return Array.from(allPerms).sort()
+}
+
 export function verifyToken(token) {
     try {
         return jwt.verify(token, JWT_SECRET)

@@ -39,7 +39,7 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
-        const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate, system_role } = req.body
+        const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate, system_role, permissions } = req.body
 
         if (!email || !first_name || !last_name) {
             return res.status(400).json({ error: 'Email, first name, and last name required' })
@@ -98,6 +98,7 @@ router.post('/', authMiddleware, async (req, res) => {
                 hire_date: req.body.hire_date || new Date().toISOString().split('T')[0],
                 role: 'staff',
                 permission_role: system_role === 'ADMIN' ? 'Shift Manager' : 'Staff', // Default admin to Shift Manager if generic ADMIN passed
+                permissions: system_role === 'ADMIN' && permissions ? permissions : null, // Store custom permissions for ADMIN
                 account_type: 'staff',
                 password_hash: null,
                 is_active: false,
@@ -154,7 +155,7 @@ router.patch('/:userId', authMiddleware, async (req, res) => {
         const { clinicId, userId } = req.params
         const updates = req.body
 
-        const allowedFields = ['first_name', 'last_name', 'phone', 'job_title', 'location_id', 'pay_type', 'pay_rate', 'is_active', 'hire_date', 'email', 'permission_role']
+        const allowedFields = ['first_name', 'last_name', 'phone', 'job_title', 'location_id', 'pay_type', 'pay_rate', 'is_active', 'hire_date', 'email', 'permission_role', 'permissions', 'system_role']
         const filteredUpdates = {}
         for (const field of allowedFields) {
             if (updates[field] !== undefined) {

@@ -152,6 +152,33 @@ router.post('/types', authMiddleware, async (req, res) => {
     }
 })
 
+// PATCH /api/clinics/:clinicId/leave/types/:id - Update leave type
+router.patch('/types/:id', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId, id } = req.params
+        const { name, isPaid, days } = req.body
+
+        const updateData = {}
+        if (name !== undefined) updateData.name = name
+        if (isPaid !== undefined) updateData.is_paid = isPaid
+        if (days !== undefined) updateData.allowance_days = Number(days)
+
+        const { data, error } = await supabaseAdmin
+            .from('leave_types')
+            .update(updateData)
+            .eq('id', id)
+            .eq('clinic_id', clinicId)
+            .select()
+            .single()
+
+        if (error) throw error
+        res.json({ data })
+    } catch (err) {
+        console.error('Update leave type error:', err)
+        res.status(500).json({ error: 'Failed to update leave type' })
+    }
+})
+
 // DELETE /api/clinics/:clinicId/leave/types/:id
 router.delete('/types/:id', authMiddleware, async (req, res) => {
     try {

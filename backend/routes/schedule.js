@@ -84,6 +84,21 @@ router.post('/:blockId/assign', authMiddleware, requirePermission('manage_schedu
         const { blockId } = req.params
         const { userId, isExternal, externalName, externalPhone, externalNotes } = req.body
 
+        // Check if shift is in the past
+        const { data: shift } = await supabaseAdmin
+            .from('schedule_blocks')
+            .select('date, start_time')
+            .eq('id', blockId)
+            .single()
+
+        if (shift) {
+            const shiftDateTime = new Date(`${shift.date}T${shift.start_time}`)
+            const now = new Date()
+            if (shiftDateTime < now) {
+                return res.status(400).json({ error: 'Cannot assign to past shifts' })
+            }
+        }
+
         const { data, error } = await supabaseAdmin
             .from('schedule_assignments')
             .insert({
@@ -230,12 +245,20 @@ router.post('/:blockId/locums', authMiddleware, requirePermission('manage_schedu
             return res.status(400).json({ error: 'Locum name is required' })
         }
 
-        // Get shift details including location_id
+        // Get shift details including location_id and check if past
         const { data: shift } = await supabaseAdmin
             .from('schedule_blocks')
-            .select('role_required, location_id')
+            .select('role_required, location_id, date, start_time')
             .eq('id', blockId)
             .single()
+
+        if (shift) {
+            const shiftDateTime = new Date(`${shift.date}T${shift.start_time}`)
+            const now = new Date()
+            if (shiftDateTime < now) {
+                return res.status(400).json({ error: 'Cannot assign to past shifts' })
+            }
+        }
 
         const { data, error } = await supabaseAdmin
             .from('external_locums')

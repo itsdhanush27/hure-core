@@ -10,6 +10,12 @@ export default function LeaveTypesManager({ clinicId, token }) {
     const [days, setDays] = useState(21);
     const [saving, setSaving] = useState(false);
 
+    // Edit State
+    const [editing, setEditing] = useState(null);
+    const [editName, setEditName] = useState('');
+    const [editIsPaid, setEditIsPaid] = useState(true);
+    const [editDays, setEditDays] = useState(21);
+
     useEffect(() => {
         fetchTypes();
     }, [clinicId]);
@@ -46,6 +52,35 @@ export default function LeaveTypesManager({ clinicId, token }) {
                 fetchTypes();
             } else {
                 alert('Failed to add type');
+            }
+        } catch (err) {
+            console.error(err);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleEdit = (type) => {
+        setEditing(type);
+        setEditName(type.name);
+        setEditIsPaid(type.is_paid);
+        setEditDays(type.allowance_days || 21);
+    };
+
+    const handleUpdate = async (e) => {
+        e.preventDefault();
+        setSaving(true);
+        try {
+            const res = await fetch(`/api/clinics/${clinicId}/leave/types/${editing.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ name: editName, isPaid: editIsPaid, days: Number(editDays) })
+            });
+            if (res.ok) {
+                setEditing(null);
+                fetchTypes();
+            } else {
+                alert('Failed to update type');
             }
         } catch (err) {
             console.error(err);
@@ -130,7 +165,10 @@ export default function LeaveTypesManager({ clinicId, token }) {
                                         </span>
                                     </td>
                                     <td className="p-3">{t.allowance_days || 0} days / year</td>
-                                    <td className="p-3 text-right">
+                                    <td className="p-3 text-right space-x-3">
+                                        <button onClick={() => handleEdit(t)} className="text-primary-600 hover:text-primary-800 font-medium text-xs">
+                                            Edit
+                                        </button>
                                         <button onClick={() => handleDelete(t.id)} className="text-red-600 hover:text-red-800 font-medium text-xs">
                                             Delete
                                         </button>
@@ -141,6 +179,52 @@ export default function LeaveTypesManager({ clinicId, token }) {
                     </tbody>
                 </table>
             </div>
+
+            {/* Edit Modal */}
+            {editing && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+                        <h2 className="text-lg font-bold mb-4">Edit Leave Type</h2>
+                        <form onSubmit={handleUpdate} className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Name</label>
+                                <input
+                                    required
+                                    value={editName} onChange={e => setEditName(e.target.value)}
+                                    className="w-full rounded border px-3 py-2"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Status</label>
+                                <select
+                                    value={editIsPaid} onChange={e => setEditIsPaid(e.target.value === 'true')}
+                                    className="w-full rounded border px-3 py-2"
+                                >
+                                    <option value="true">Paid</option>
+                                    <option value="false">Unpaid</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 mb-1">Annual Days</label>
+                                <input
+                                    type="number"
+                                    value={editDays} onChange={e => setEditDays(e.target.value)}
+                                    className="w-full rounded border px-3 py-2"
+                                />
+                            </div>
+                            <div className="flex gap-3 pt-2">
+                                <button type="button" onClick={() => setEditing(null)} className="flex-1 px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50">
+                                    Cancel
+                                </button>
+                                <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium">
+                                    {saving ? 'Saving...' : 'Save Changes'}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
+

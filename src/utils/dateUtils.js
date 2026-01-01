@@ -60,3 +60,15 @@ export const formatTime = (timeStr) => {
     const d = new Date(timeStr)
     return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
 }
+
+/**
+ * Check if a shift has expired (start time has passed)
+ * @param {string} shiftDate - Date string (yyyy-mm-dd)
+ * @param {string} shiftStartTime - Time string (HH:MM:SS)
+ * @returns {boolean} True if shift has expired
+ */
+export const isShiftExpired = (shiftDate, shiftStartTime) => {
+    if (!shiftDate || !shiftStartTime) return false
+    const shiftDateTime = new Date(`${shiftDate}T${shiftStartTime}`)
+    return shiftDateTime < new Date()
+}

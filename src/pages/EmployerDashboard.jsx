@@ -531,8 +531,11 @@ export default function EmployerDashboard() {
         const [newStaff, setNewStaff] = useState({
             first_name: '', last_name: '', email: '', phone: '',
             job_title: '', location_id: '', employment_type: 'full-time', pay_rate: '', hire_date: '',
-            system_role: 'EMPLOYEE'
+            system_role: 'EMPLOYEE',
+            permissions: []
         })
+
+        const allPermissions = ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings']
         const [adding, setAdding] = useState(false)
         const [updating, setUpdating] = useState(false)
         const [staffTab, setStaffTab] = useState('all') // 'all', 'salaried', 'casual'
@@ -587,7 +590,8 @@ export default function EmployerDashboard() {
                 pay_rate: staff.pay_rate || '',
                 is_active: staff.is_active !== false,
                 system_role: sysRole,
-                role: staff.role
+                role: staff.role,
+                permissions: staff.permissions || []
             })
             setShowEditForm(true)
         }
@@ -783,10 +787,11 @@ export default function EmployerDashboard() {
                                     <label className="block text-sm font-medium text-slate-700 mb-1">System Role</label>
                                     <select
                                         value={newStaff.system_role || 'EMPLOYEE'}
-                                        onChange={(e) => setNewStaff({ ...newStaff, system_role: e.target.value })}
+                                        onChange={(e) => setNewStaff({ ...newStaff, system_role: e.target.value, permissions: e.target.value === 'ADMIN' ? newStaff.permissions : [] })}
                                         className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                     >
                                         <option value="EMPLOYEE">EMPLOYEE</option>
+                                        <option value="ADMIN">ADMIN</option>
                                     </select>
                                 </div>
                                 <div>
@@ -835,6 +840,34 @@ export default function EmployerDashboard() {
                                     />
                                 </div>
                             </div>
+
+                            {/* Permissions Panel - Show only for ADMIN */}
+                            {newStaff.system_role === 'ADMIN' && (
+                                <div className="border rounded-lg p-4 bg-slate-50">
+                                    <h3 className="text-sm font-semibold text-slate-700 mb-3">Admin Permissions</h3>
+                                    <p className="text-xs text-slate-500 mb-3">Select specific permissions for this admin user. This allows fine-grained access control.</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {allPermissions.map(perm => (
+                                            <label key={perm} className="flex items-center gap-2 text-sm">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={newStaff.permissions?.includes(perm) || false}
+                                                    onChange={(e) => {
+                                                        const perms = newStaff.permissions || []
+                                                        if (e.target.checked) {
+                                                            setNewStaff({ ...newStaff, permissions: [...perms, perm] })
+                                                        } else {
+                                                            setNewStaff({ ...newStaff, permissions: perms.filter(p => p !== perm) })
+                                                        }
+                                                    }}
+                                                    className="rounded"
+                                                />
+                                                <span className="text-slate-700">{perm.replace(/_/g, ' ')}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                             <div className="flex gap-3">
                                 <button
                                     type="submit"
@@ -857,23 +890,6 @@ export default function EmployerDashboard() {
                 }
 
                 <Card title="Staff Members">
-                    {/* Staff Type Tabs */}
-                    <div className="flex gap-2 border-b mb-4 px-2">
-                        <button
-                            onClick={() => setStaffTab('all')}
-                            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${staffTab === 'all' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                        >
-                            All Staff
-                        </button>
-                        <button
-                            onClick={() => setStaffTab('salaried')}
-                            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${staffTab === 'salaried' ? 'border-primary-600 text-primary-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                        >
-                            Salaried
-                        </button>
-
-                    </div>
-
                     {org.staff.length === 0 ? (
                         <div className="text-center py-12 text-slate-500">
                             <div className="text-4xl mb-4">👥</div>
@@ -895,13 +911,6 @@ export default function EmployerDashboard() {
                             <tbody>
                                 {org.staff
                                     .filter(s => s && s.role !== 'superadmin' && !s.email?.includes('@hure.app'))
-                                    .filter(s => {
-                                        if (staffTab === 'all') return true
-                                        const type = (s.employment_type || 'full-time').toLowerCase()
-                                        if (staffTab === 'salaried') return ['full-time', 'part-time', 'salaried'].includes(type)
-
-                                        return true
-                                    })
                                     .map(s => {
                                         // Determine badge color based on role
                                         // If permission_role is 'Staff' (or missing and defaults to Staff), it's Gray.
@@ -1033,6 +1042,35 @@ export default function EmployerDashboard() {
                                             <input type="number" value={editingStaff.pay_rate} onChange={(e) => setEditingStaff({ ...editingStaff, pay_rate: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
                                         </div>
                                     </div>
+
+                                    {/* Permissions Panel for Edit - Show only for ADMIN */}
+                                    {editingStaff.system_role === 'ADMIN' && (
+                                        <div className="border rounded-lg p-4 bg-slate-50">
+                                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Admin Permissions</h3>
+                                            <p className="text-xs text-slate-500 mb-3">Select specific permissions for this admin user.</p>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                {allPermissions.map(perm => (
+                                                    <label key={perm} className="flex items-center gap-2 text-sm">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={editingStaff.permissions?.includes(perm) || false}
+                                                            onChange={(e) => {
+                                                                const perms = editingStaff.permissions || []
+                                                                if (e.target.checked) {
+                                                                    setEditingStaff({ ...editingStaff, permissions: [...perms, perm] })
+                                                                } else {
+                                                                    setEditingStaff({ ...editingStaff, permissions: perms.filter(p => p !== perm) })
+                                                                }
+                                                            }}
+                                                            className="rounded"
+                                                        />
+                                                        <span className="text-slate-700">{perm.replace(/_/g, ' ')}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     <div className="flex items-center gap-2">
                                         <input type="checkbox" id="is_active" checked={editingStaff.is_active} onChange={(e) => setEditingStaff({ ...editingStaff, is_active: e.target.checked })} className="rounded" />
                                         <label htmlFor="is_active" className="text-sm text-slate-700">Active Employee</label>
@@ -2472,8 +2510,12 @@ export default function EmployerDashboard() {
         }
 
         const formatDate = (dateStr) => {
-            const date = new Date(dateStr)
-            return date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+            if (!dateStr) return '-'
+            const d = new Date(dateStr)
+            const day = String(d.getDate()).padStart(2, '0')
+            const month = String(d.getMonth() + 1).padStart(2, '0')
+            const year = d.getFullYear()
+            return `${day}/${month}/${year}`
         }
 
         const formatTime = (time) => time?.slice(0, 5)
@@ -2600,41 +2642,48 @@ export default function EmployerDashboard() {
                         </div>
                     ) : (
                         <div className="divide-y">
-                            {schedules.map(shift => (
-                                <div key={shift.id} className="py-4 flex items-center justify-between">
-                                    <div className="flex items-center gap-4">
-                                        <div className="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center">
-                                            <span className="text-primary-600 font-bold">{formatDate(shift.date).slice(0, 3)}</span>
+                            {schedules.map(shift => {
+                                const expired = new Date(`${shift.date}T${shift.start_time}`) < new Date()
+                                return (
+                                    <div key={shift.id} className={`py-4 flex items-center justify-between ${expired ? 'opacity-60' : ''}`}>
+                                        <div className="flex items-center gap-4">
+                                            <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${expired ? 'bg-slate-200' : 'bg-primary-100'}`}>
+                                                <span className={`font-bold ${expired ? 'text-slate-500' : 'text-primary-600'}`}>{formatDate(shift.date).slice(0, 3)}</span>
+                                            </div>
+                                            <div>
+                                                <div className="font-medium flex items-center gap-2">
+                                                    {formatDate(shift.date)}
+                                                    {expired && <span className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded">Expired</span>}
+                                                </div>
+                                                <div className="text-sm text-slate-500">
+                                                    {formatTime(shift.start_time)} - {formatTime(shift.end_time)} · {shift.clinic_locations?.name}
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <div className="font-medium">{formatDate(shift.date)}</div>
-                                            <div className="text-sm text-slate-500">
-                                                {formatTime(shift.start_time)} - {formatTime(shift.end_time)} · {shift.clinic_locations?.name}
+                                        <div className="flex items-center gap-4">
+                                            <div className="text-right">
+                                                <div className="text-sm text-slate-600">{shift.role_required || 'Any role'}</div>
+                                                <div className="text-xs text-slate-400">{(shift.schedule_assignments?.length || 0) + (shift.locum_count || 0)} / {shift.headcount_required} assigned</div>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    onClick={() => handleManageCoverage(shift)}
+                                                    disabled={expired}
+                                                    className={`px-3 py-1.5 text-sm rounded-lg ${expired ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-primary-600 hover:bg-primary-700 text-white'}`}
+                                                >
+                                                    {expired ? 'Expired' : 'Manage coverage'}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteShift(shift.id)}
+                                                    className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 border border-red-300 rounded-lg"
+                                                >
+                                                    Delete
+                                                </button>
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-4">
-                                        <div className="text-right">
-                                            <div className="text-sm text-slate-600">{shift.role_required || 'Any role'}</div>
-                                            <div className="text-xs text-slate-400">{(shift.schedule_assignments?.length || 0) + (shift.locum_count || 0)} / {shift.headcount_required} assigned</div>
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <button
-                                                onClick={() => handleManageCoverage(shift)}
-                                                className="px-3 py-1.5 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg"
-                                            >
-                                                Manage coverage
-                                            </button>
-                                            <button
-                                                onClick={() => handleDeleteShift(shift.id)}
-                                                className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 border border-red-300 rounded-lg"
-                                            >
-                                                Delete
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
+                                )
+                            })}
                         </div>
                     )}
                 </Card>
@@ -2882,6 +2931,7 @@ export default function EmployerDashboard() {
         const [endDateFilter, setEndDateFilter] = useState(new Date().toISOString().split('T')[0])
         const [searchName, setSearchName] = useState('')
         const [dateRange, setDateRange] = useState('custom')
+        const [staffTypeFilter, setStaffTypeFilter] = useState('all') // 'all', 'internal', 'external'
 
         useEffect(() => {
             fetchAttendance()
@@ -3045,6 +3095,10 @@ export default function EmployerDashboard() {
         }
 
         const filteredAttendance = attendance.filter(a => {
+            // Staff type filter
+            if (staffTypeFilter === 'internal' && a.type === 'locum') return false
+            if (staffTypeFilter === 'external' && a.type !== 'locum') return false
+
             const search = searchName.toLowerCase()
             if (!search) return true // Show all if search is empty
 
@@ -3119,6 +3173,28 @@ export default function EmployerDashboard() {
                             </button>
                         </div>
 
+                        {/* Staff Type Filter */}
+                        <div className="flex gap-1 border rounded-lg p-1">
+                            <button
+                                onClick={() => setStaffTypeFilter('all')}
+                                className={`px-3 py-1 rounded text-sm font-medium ${staffTypeFilter === 'all' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                            >
+                                All
+                            </button>
+                            <button
+                                onClick={() => setStaffTypeFilter('internal')}
+                                className={`px-3 py-1 rounded text-sm font-medium ${staffTypeFilter === 'internal' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                            >
+                                Salaried
+                            </button>
+                            <button
+                                onClick={() => setStaffTypeFilter('external')}
+                                className={`px-3 py-1 rounded text-sm font-medium ${staffTypeFilter === 'external' ? 'bg-primary-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                            >
+                                External
+                            </button>
+                        </div>
+
                         {/* Custom Date Range Picker */}
                         <div className="flex items-center gap-2">
                             <label className="text-sm text-slate-600">From:</label>
@@ -3170,7 +3246,7 @@ export default function EmployerDashboard() {
                 </div>
 
                 {/* Attendance Table */}
-                <Card title={`Attendance for ${new Date(dateFilter).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`}>
+                <Card title={`Attendance for ${(() => { const d = new Date(dateFilter); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; })()}`}>
                     {attendanceLoading ? (
                         <div className="text-center py-8">Loading...</div>
                     ) : filteredAttendance.length === 0 ? (
@@ -3312,7 +3388,12 @@ export default function EmployerDashboard() {
         }
 
         const formatDate = (dateStr) => {
-            return new Date(dateStr).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+            if (!dateStr) return '-'
+            const d = new Date(dateStr)
+            const day = String(d.getDate()).padStart(2, '0')
+            const month = String(d.getMonth() + 1).padStart(2, '0')
+            const year = d.getFullYear()
+            return `${day}/${month}/${year}`
         }
 
         const getStatusColor = (status) => {
