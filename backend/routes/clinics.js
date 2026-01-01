@@ -98,6 +98,12 @@ router.patch('/:clinicId/settings', authMiddleware, requirePermission('manage_se
         const { clinicId } = req.params
         const updates = req.body
 
+        // CRITICAL: Validate that the user belongs to this clinic
+        if (req.user.clinicId !== clinicId) {
+            console.error(`❌ Settings PATCH clinicId mismatch! User: ${req.user.clinicId}, Requested: ${clinicId}`)
+            return res.status(403).json({ error: 'You do not have permission to update this organization.' })
+        }
+
         // Allowed updates
         const allowedFields = ['name', 'phone', 'contact_name', 'kra_pin', 'business_reg_no']
         const filteredUpdates = {}
@@ -150,6 +156,12 @@ router.post('/:clinicId/verification', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
         const { kra_pin, business_reg_no } = req.body
+
+        // CRITICAL: Validate that the user belongs to this clinic to prevent cross-tenant updates
+        if (req.user.clinicId !== clinicId) {
+            console.error(`❌ ClinicId mismatch! User clinicId: ${req.user.clinicId}, Requested clinicId: ${clinicId}`)
+            return res.status(403).json({ error: 'You do not have permission to update this organization.' })
+        }
 
         const { data, error } = await supabaseAdmin
             .from('clinics')
