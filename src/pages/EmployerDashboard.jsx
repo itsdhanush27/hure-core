@@ -787,11 +787,10 @@ export default function EmployerDashboard() {
                                     <label className="block text-sm font-medium text-slate-700 mb-1">System Role</label>
                                     <select
                                         value={newStaff.system_role || 'EMPLOYEE'}
-                                        onChange={(e) => setNewStaff({ ...newStaff, system_role: e.target.value, permissions: e.target.value === 'ADMIN' ? newStaff.permissions : [] })}
+                                        onChange={(e) => setNewStaff({ ...newStaff, system_role: e.target.value })}
                                         className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                     >
                                         <option value="EMPLOYEE">EMPLOYEE</option>
-                                        <option value="ADMIN">ADMIN</option>
                                     </select>
                                 </div>
                                 <div>
