@@ -127,7 +127,13 @@ router.patch('/:locationId', authMiddleware, async (req, res) => {
 router.post('/:locationId/verify', authMiddleware, async (req, res) => {
     try {
         const { clinicId, locationId } = req.params
-        const { license_no, licensing_body, license_expiry } = req.body
+        const { license_no, licensing_body, license_expiry, license_document_url } = req.body
+
+        // CRITICAL: Validate that the user belongs to this clinic
+        if (req.user.clinicId !== clinicId) {
+            console.error(`❌ Facility verify clinicId mismatch! User: ${req.user.clinicId}, Requested: ${clinicId}`)
+            return res.status(403).json({ error: 'You do not have permission to update this facility.' })
+        }
 
         const { data, error } = await supabaseAdmin
             .from('clinic_locations')
@@ -135,6 +141,7 @@ router.post('/:locationId/verify', authMiddleware, async (req, res) => {
                 license_no,
                 licensing_body,
                 license_expiry,
+                license_document_url: license_document_url || null,
                 facility_verification_status: 'pending_review',
                 updated_at: new Date().toISOString()
             })

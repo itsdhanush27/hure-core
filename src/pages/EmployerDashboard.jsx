@@ -1389,9 +1389,13 @@ export default function EmployerDashboard() {
         const handleFacilitySubmit = async (e) => {
             e.preventDefault()
             const clinicId = localStorage.getItem('hure_clinic_id')
+
+            // Find the selected location to get its document URL
+            const selectedLocation = org.locations.find(l => l.id === facForm.locationId)
+
             setSubmitting(true)
             try {
-                const res = await fetch(`/api/clinics/${clinicId}/locations/${facForm.locationId}/verification`, {
+                const res = await fetch(`/api/clinics/${clinicId}/locations/${facForm.locationId}/verify`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1400,16 +1404,21 @@ export default function EmployerDashboard() {
                     body: JSON.stringify({
                         license_no: facForm.license_no,
                         licensing_body: facForm.licensing_body,
-                        license_expiry: facForm.expiry_date
+                        license_expiry: facForm.expiry_date,
+                        license_document_url: selectedLocation?.license_document_url || null
                     })
                 })
                 if (res.ok) {
                     fetchDashboardData(clinicId)
                     alert('Facility submitted for verification!')
                     setFacForm({ locationId: '', license_no: '', licensing_body: '', expiry_date: '' })
+                } else {
+                    const error = await res.json()
+                    alert(error.error || 'Failed to submit facility verification')
                 }
             } catch (err) {
                 console.error('Facility submit error:', err)
+                alert('Failed to submit facility verification')
             } finally {
                 setSubmitting(false)
             }
@@ -1628,8 +1637,8 @@ export default function EmployerDashboard() {
                                 </div>
                                 <button
                                     type="submit"
-                                    disabled={submitting}
-                                    className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg disabled:opacity-50"
+                                    disabled={submitting || !facForm.locationId || !facForm.license_no || !facForm.licensing_body || !facForm.expiry_date}
+                                    className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {submitting ? 'Submitting...' : 'Submit for Review'}
                                 </button>
