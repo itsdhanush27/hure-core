@@ -1,6 +1,6 @@
 import express from 'express'
 import { supabaseAdmin } from '../lib/supabase.js'
-import { authMiddleware } from '../lib/auth.js'
+import { authMiddleware, requirePermission } from '../lib/auth.js'
 
 const router = express.Router({ mergeParams: true })
 
@@ -127,7 +127,7 @@ router.get('/types', authMiddleware, async (req, res) => {
 })
 
 // POST /api/clinics/:clinicId/leave/types
-router.post('/types', authMiddleware, async (req, res) => {
+router.post('/types', authMiddleware, requirePermission('approve_leave'), async (req, res) => {
     try {
         const { clinicId } = req.params
         const { name, isPaid, days } = req.body
@@ -153,7 +153,7 @@ router.post('/types', authMiddleware, async (req, res) => {
 })
 
 // PATCH /api/clinics/:clinicId/leave/types/:id - Update leave type
-router.patch('/types/:id', authMiddleware, async (req, res) => {
+router.patch('/types/:id', authMiddleware, requirePermission('approve_leave'), async (req, res) => {
     try {
         const { clinicId, id } = req.params
         const { name, isPaid, days } = req.body
@@ -180,7 +180,7 @@ router.patch('/types/:id', authMiddleware, async (req, res) => {
 })
 
 // DELETE /api/clinics/:clinicId/leave/types/:id
-router.delete('/types/:id', authMiddleware, async (req, res) => {
+router.delete('/types/:id', authMiddleware, requirePermission('approve_leave'), async (req, res) => {
     try {
         const { clinicId, id } = req.params
         const { error } = await supabaseAdmin
@@ -198,3 +198,5 @@ router.delete('/types/:id', authMiddleware, async (req, res) => {
 })
 
 export default router
+
+// Force restart

@@ -15,6 +15,8 @@ import leaveRoutes from './routes/leave.js'
 import payrollRoutes from './routes/payroll.js'
 import adminRoutes from './routes/admin.js'
 import employeeRoutes from './routes/employee.js'
+import dashboardRoutes from './routes/dashboard.js'
+import documentsRoutes from './routes/documents.js'
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -46,6 +48,8 @@ app.use('/api/clinics/:clinicId/leave', leaveRoutes)
 app.use('/api/clinics/:clinicId/payroll', payrollRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/employee', employeeRoutes)
+app.use('/api/dashboard', dashboardRoutes)
+app.use('/api/users/:userId/documents', documentsRoutes)
 
 // Route summary
 console.log('\n📋 Available Routes:')
@@ -64,6 +68,7 @@ console.log('   GET          /api/admin/verifications/pending')
 console.log('   GET          /api/employee/profile')
 console.log('   GET          /api/employee/schedule')
 console.log('   GET          /api/employee/attendance')
+console.log('   GET          /api/dashboard/:clinicId/hr-stats')
 
 // Error handling
 app.use((err, req, res, next) => {

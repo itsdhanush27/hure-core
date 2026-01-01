@@ -19,6 +19,46 @@ const upload = multer({
     }
 })
 
+// GET /api/clinics/:clinicId/compliance-stats
+router.get('/:clinicId/compliance-stats', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+
+        // 1. Get all documents for this clinic
+        const { data: docs, error: docError } = await supabaseAdmin
+            .from('user_documents')
+            .select('user_id, type')
+            .eq('clinic_id', clinicId)
+
+        if (docError) throw docError
+
+        const uniqueUserIds = [...new Set(docs.map(d => d.user_id))]
+        const licenseCount = docs.filter(d => d.type === 'license').length // Count specific to licenses if requested, or just total docs
+
+        // 2. Get names of these users
+        let staffNames = []
+        if (uniqueUserIds.length > 0) {
+            const { data: users, error: userError } = await supabaseAdmin
+                .from('users')
+                .select('first_name, last_name')
+                .in('id', uniqueUserIds)
+
+            if (userError) throw userError
+            staffNames = users.map(u => `${u.first_name} ${u.last_name}`)
+        }
+
+        res.json({
+            count: docs.length, // Total docs
+            licenseCount, // Just licenses
+            staffCount: uniqueUserIds.length,
+            staffNames
+        })
+    } catch (err) {
+        console.error('Compliance stats error:', err)
+        res.status(500).json({ error: 'Failed to fetch compliance stats' })
+    }
+})
+
 // GET /api/clinics/:clinicId/settings
 router.get('/:clinicId/settings', authMiddleware, async (req, res) => {
     try {
@@ -164,6 +204,176 @@ router.post('/:clinicId/plan', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('Plan selection error:', err)
         res.status(500).json({ error: 'Failed to select plan' })
+    }
+})
+
+// ============================================
+// ROLES ENDPOINTS
+// ============================================
+
+// GET /api/clinics/:clinicId/roles - Get custom roles
+router.get('/:clinicId/roles', authMiddleware, async (req, res) => {
+    try {
+        const { clinicId } = req.params
+
+        const { data, error } = await supabaseAdmin
+            .from('clinics')
+            .select('custom_roles')
+            .eq('id', clinicId)
+            .single()
+
+        if (error) {
+            console.error('Roles fetch error:', error)
+            return res.status(500).json({ error: 'Failed to fetch roles' })
+        }
+
+        res.json({ roles: data.custom_roles || [] })
+    } catch (err) {
+        console.error('Roles error:', err)
+        res.status(500).json({ error: 'Failed to fetch roles' })
+    }
+})
+
+// POST /api/clinics/:clinicId/roles - Create custom role
+router.post('/:clinicId/roles', authMiddleware, requirePermission('manage_settings'), async (req, res) => {
+    try {
+        const { clinicId } = req.params
+        const { name, description, permissions } = req.body
+
+        if (!name) {
+            return res.status(400).json({ error: 'Role name is required' })
+        }
+
+        // Get current roles
+        const { data: clinic, error: fetchError } = await supabaseAdmin
+            .from('clinics')
+            .select('custom_roles')
+            .eq('id', clinicId)
+            .single()
+
+        if (fetchError) {
+            return res.status(500).json({ error: 'Failed to fetch current roles' })
+        }
+
+        const currentRoles = clinic.custom_roles || []
+
+        // Check for duplicate name
+        if (currentRoles.some(r => r.name.toLowerCase() === name.toLowerCase())) {
+            return res.status(400).json({ error: 'Role name already exists' })
+        }
+
+        // Add new role
+        const newRole = {
+            name,
+            description: description || '',
+            permissions: permissions || [],
+            isSystem: false,
+            createdAt: new Date().toISOString()
+        }
+
+        const updatedRoles = [...currentRoles, newRole]
+
+        // Update database
+        const { error: updateError } = await supabaseAdmin
+            .from('clinics')
+            .update({ custom_roles: updatedRoles })
+            .eq('id', clinicId)
+
+        if (updateError) {
+            console.error('Role create error:', updateError)
+            return res.status(500).json({ error: 'Failed to create role' })
+        }
+
+        res.json({ success: true, role: newRole })
+    } catch (err) {
+        console.error('Role create error:', err)
+        res.status(500).json({ error: 'Failed to create role' })
+    }
+})
+
+// DELETE /api/clinics/:clinicId/roles/:roleName - Delete custom role
+router.delete('/:clinicId/roles/:roleName', authMiddleware, requirePermission('manage_settings'), async (req, res) => {
+    try {
+        const { clinicId, roleName } = req.params
+
+        // Get current roles
+        const { data: clinic, error: fetchError } = await supabaseAdmin
+            .from('clinics')
+            .select('custom_roles')
+            .eq('id', clinicId)
+            .single()
+
+        if (fetchError) {
+            return res.status(500).json({ error: 'Failed to fetch current roles' })
+        }
+
+        const currentRoles = clinic.custom_roles || []
+        const updatedRoles = currentRoles.filter(r => r.name !== roleName)
+
+        if (currentRoles.length === updatedRoles.length) {
+            return res.status(404).json({ error: 'Role not found' })
+        }
+
+        // Update database
+        const { error: updateError } = await supabaseAdmin
+            .from('clinics')
+            .update({ custom_roles: updatedRoles })
+            .eq('id', clinicId)
+
+        if (updateError) {
+            console.error('Role delete error:', updateError)
+            return res.status(500).json({ error: 'Failed to delete role' })
+        }
+
+        res.json({ success: true })
+    } catch (err) {
+        console.error('Role delete error:', err)
+        res.status(500).json({ error: 'Failed to delete role' })
+    }
+})
+
+// PATCH /api/clinics/:clinicId/roles/:roleName - Update custom role (permissions)
+router.patch('/:clinicId/roles/:roleName', authMiddleware, requirePermission('manage_settings'), async (req, res) => {
+    try {
+        const { clinicId, roleName } = req.params
+        const { permissions } = req.body
+
+        // Get current roles
+        const { data: clinic, error: fetchError } = await supabaseAdmin
+            .from('clinics')
+            .select('custom_roles')
+            .eq('id', clinicId)
+            .single()
+
+        if (fetchError) {
+            return res.status(500).json({ error: 'Failed to fetch current roles' })
+        }
+
+        const currentRoles = clinic.custom_roles || []
+        const roleIndex = currentRoles.findIndex(r => r.name === roleName)
+
+        if (roleIndex === -1) {
+            return res.status(404).json({ error: 'Role not found' })
+        }
+
+        // Update permissions
+        currentRoles[roleIndex].permissions = permissions || []
+
+        // Update database
+        const { error: updateError } = await supabaseAdmin
+            .from('clinics')
+            .update({ custom_roles: currentRoles })
+            .eq('id', clinicId)
+
+        if (updateError) {
+            console.error('Role update error:', updateError)
+            return res.status(500).json({ error: 'Failed to update role' })
+        }
+
+        res.json({ success: true, role: currentRoles[roleIndex] })
+    } catch (err) {
+        console.error('Role update error:', err)
+        res.status(500).json({ error: 'Failed to update role' })
     }
 })
 
@@ -402,7 +612,7 @@ router.get('/:clinicId/leave/pending', authMiddleware, async (req, res) => {
 
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
-            .select('*, user:user_id(first_name, last_name, email)')
+            .select('*, user:user_id(first_name, last_name, email, location_id)')
             .eq('clinic_id', clinicId)
             .eq('status', 'pending')
             .order('created_at', { ascending: false })
@@ -431,17 +641,45 @@ router.get('/:clinicId/leave/pending', authMiddleware, async (req, res) => {
 router.patch('/:clinicId/leave/:leaveId', authMiddleware, async (req, res) => {
     try {
         const { leaveId } = req.params
-        const { status } = req.body
+        const { status, rejectionReason } = req.body
+        const reviewerId = req.user.userId
 
         console.log('📋 Updating leave request:', leaveId, 'to', status)
 
+        // 1. Fetch request to check self-approval
+        const { data: request, error: fetchError } = await supabaseAdmin
+            .from('leave_requests')
+            .select('user_id, status')
+            .eq('id', leaveId)
+            .single()
+
+        if (fetchError || !request) {
+            return res.status(404).json({ error: 'Leave request not found' })
+        }
+
+        // Prevent self-approval
+        if (request.user_id === reviewerId) {
+            return res.status(403).json({ error: 'You cannot approve/reject your own leave request.' })
+        }
+
+        // Require rejection reason
+        if (status === 'rejected' && !rejectionReason) {
+            return res.status(400).json({ error: 'Rejection reason is required.' })
+        }
+
+        const updates = {
+            status,
+            reviewed_by: reviewerId,
+            reviewed_at: new Date().toISOString()
+        }
+
+        if (status === 'rejected') {
+            updates.rejection_reason = rejectionReason
+        }
+
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
-            .update({
-                status,
-                reviewed_by: req.user.userId,
-                reviewed_at: new Date().toISOString()
-            })
+            .update(updates)
             .eq('id', leaveId)
             .select()
             .single()
@@ -450,6 +688,9 @@ router.patch('/:clinicId/leave/:leaveId', authMiddleware, async (req, res) => {
             console.error('❌ Leave update error:', error)
             return res.status(500).json({ error: 'Failed to update leave request', details: error.message })
         }
+
+        // TODO: If approved, we could create attendance records here or deduct balance explicitly if we stored it.
+        // For now, dynamic calculation in GET /leave handles balance.
 
         console.log('✅ Leave updated successfully:', data.id, data.status)
         res.json({ success: true, data })
@@ -861,7 +1102,7 @@ router.patch('/:clinicId/staff/:staffId', authMiddleware, async (req, res) => {
 router.post('/:clinicId/documents/upload', authMiddleware, upload.single('file'), async (req, res) => {
     try {
         const { clinicId } = req.params
-        const { documentType, expiryDate } = req.body
+        const { documentType, expiryDate, locationId } = req.body
         const file = req.file
 
         if (!file) {
@@ -909,26 +1150,45 @@ router.post('/:clinicId/documents/upload', authMiddleware, upload.single('file')
         if (documentType === 'business_reg') {
             updates.business_reg_doc = documentUrl
             if (expiryDate) updates.business_reg_expiry = expiryDate
+
+            const { data, error } = await supabaseAdmin
+                .from('clinics')
+                .update(updates)
+                .eq('id', clinicId)
+                .select()
+                .single()
+
+            if (error) {
+                console.error('Database update error:', error)
+                return res.status(500).json({ error: 'Failed to save document reference' })
+            }
+            res.json({ success: true, clinic: data, filePath: fileName })
+
         } else if (documentType === 'facility_license') {
-            updates.facility_license_doc = documentUrl
-            if (expiryDate) updates.facility_license_expiry = expiryDate
+            if (!locationId) {
+                return res.status(400).json({ error: 'Location ID is required for facility license' })
+            }
+
+            const locUpdates = {
+                license_document_url: documentUrl,
+                updated_at: new Date().toISOString()
+            }
+            // If we want to update expiry here? Usually handled by form submit, but if provided:
+            if (expiryDate) locUpdates.license_expiry = expiryDate
+
+            const { data, error } = await supabaseAdmin
+                .from('clinic_locations')
+                .update(locUpdates)
+                .eq('id', locationId)
+                .select()
+                .single()
+
+            if (error) {
+                console.error('Database update error:', error)
+                return res.status(500).json({ error: 'Failed to save facility license' })
+            }
+            res.json({ success: true, location: data, filePath: fileName })
         }
-
-        // Update clinic record with document URL
-        const { data, error } = await supabaseAdmin
-            .from('clinics')
-            .update(updates)
-            .eq('id', clinicId)
-            .select()
-            .single()
-
-        if (error) {
-            console.error('Database update error:', error)
-            return res.status(500).json({ error: 'Failed to save document reference' })
-        }
-
-        console.log('✅ Document uploaded to Supabase Storage:', fileName)
-        res.json({ success: true, clinic: data, filePath: fileName })
     } catch (err) {
         console.error('Document upload error:', err)
         res.status(500).json({ error: 'Failed to upload document: ' + err.message })

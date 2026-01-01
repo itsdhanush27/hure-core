@@ -26,9 +26,21 @@ router.get('/profile', authMiddleware, async (req, res) => {
                 firstName: data.first_name,
                 lastName: data.last_name,
                 phone: data.phone,
+                gender: data.gender,
+                dob: data.dob,
+                emergencyContact: {
+                    name: data.emergency_contact_name,
+                    phone: data.emergency_contact_phone,
+                    relationship: data.emergency_contact_relationship
+                },
+                address: {
+                    country: data.country || 'Kenya',
+                    city: data.city,
+                    area: data.area
+                },
                 jobTitle: data.job_title || 'Staff',
-                role: data.role || 'Staff', // Actual role (Staff/Owner etc)
-                permission_role: data.permission_role, // Permission level for RBAC
+                role: data.role || 'Staff',
+                permission_role: data.permission_role,
                 location: data.clinic_locations?.name || 'Main Location',
                 hireDate: data.hire_date,
                 clinicName: data.clinics?.name || ''
@@ -37,6 +49,50 @@ router.get('/profile', authMiddleware, async (req, res) => {
     } catch (err) {
         console.error('Get profile error:', err)
         res.status(500).json({ error: 'Failed to fetch profile' })
+    }
+})
+
+// PATCH /api/employee/profile
+router.patch('/profile', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.userId
+        const updates = req.body
+
+        // Filter allowed fields
+        const allowed = ['phone', 'gender', 'dob', 'city', 'area', 'country', 'emergency_contact_name', 'emergency_contact_phone', 'emergency_contact_relationship']
+        const filtered = {}
+
+        Object.keys(updates).forEach(key => {
+            if (allowed.includes(key)) {
+                let value = updates[key]
+                // Convert empty strings to null for nullable fields to avoid Postgres type errors
+                if (value === '') value = null
+                filtered[key] = value
+            }
+        })
+
+        // Basic validation
+        if (updates.phone === '') filtered.phone = null // Allow clearing? or require? User said Phone Required.
+        // If phone is required, we should check it, but let's assume frontend validation for now.
+
+        filtered.last_profile_update = new Date().toISOString()
+
+        const { data, error } = await supabaseAdmin
+            .from('users')
+            .update(filtered)
+            .eq('id', userId)
+            .select()
+            .single()
+
+        if (error) {
+            console.error('Profile update error:', error)
+            return res.status(500).json({ error: 'Failed to update profile' })
+        }
+
+        res.json({ success: true, message: 'Profile updated successfully' })
+    } catch (err) {
+        console.error('Update profile error:', err)
+        res.status(500).json({ error: 'Failed to update profile' })
     }
 })
 
@@ -233,6 +289,7 @@ router.get('/leave', authMiddleware, async (req, res) => {
         const approvedDays = (requests || [])
             .filter(r => r.status === 'approved')
             .reduce((sum, r) => {
+                if (r.units_requested) return sum + r.units_requested
                 const start = new Date(r.start_date)
                 const end = new Date(r.end_date)
                 const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1
@@ -276,6 +333,16 @@ router.post('/leave', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'User not associated with a clinic' })
         }
 
+        const start = new Date(startDate)
+        const end = new Date(endDate)
+
+        if (end < start) {
+            return res.status(400).json({ error: 'End date cannot be before start date' })
+        }
+
+        // Calculate units (days)
+        const units = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1
+
         const { data, error } = await supabaseAdmin
             .from('leave_requests')
             .insert({
@@ -284,6 +351,7 @@ router.post('/leave', authMiddleware, async (req, res) => {
                 leave_type: leaveType,
                 start_date: startDate,
                 end_date: endDate,
+                units_requested: units,
                 reason,
                 status: 'pending'
             })

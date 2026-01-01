@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken'
+import { supabaseAdmin } from './supabase.js'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'hure-dev-secret-key-min-32-chars'
 
@@ -8,13 +9,14 @@ export function generateToken(payload) {
 
 
 // Role Definitions (Must match frontend)
+// Role Definitions (Must match frontend)
 export const ROLE_PERMISSIONS = {
     'Staff': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile'],
     'Shift Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'payroll', 'manage_staff'],
-    'HR Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'manage_schedule'],
-    'Payroll Officer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_attendance', 'payroll', 'manage_schedule'],
-    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings'],
-    'Employer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'settings']
+    'HR Manager': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'manage_schedule', 'edit_attendance', 'manage_settings', 'manage_verification', 'manage_docs_policies'],
+    'Payroll Officer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_attendance', 'payroll', 'manage_schedule', 'export_payroll'],
+    'Owner': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'export_payroll', 'manage_settings', 'manage_verification', 'manage_docs_policies', 'edit_attendance'],
+    'Employer': ['my_schedule', 'my_attendance', 'my_leave', 'my_profile', 'team_schedule', 'manage_schedule', 'staff_list', 'manage_staff', 'approve_leave', 'team_attendance', 'payroll', 'export_payroll', 'manage_settings', 'manage_verification', 'manage_docs_policies', 'edit_attendance']
 }
 
 // Get all unique permissions across all roles
@@ -66,30 +68,72 @@ export function superadminMiddleware(req, res, next) {
 
 // Middleware to check for specific permission
 export function requirePermission(permission) {
-    return (req, res, next) => {
+    return async (req, res, next) => {
         // Superadmin bypass
         if (req.user?.role === 'superadmin' || req.user?.email?.includes('@hure.app')) {
             return next()
         }
 
-        let userRole = req.user?.permission_role || req.user?.role || 'Staff'
-
-        // Normalize role name (capitalize first letter) to match ROLE_PERMISSIONS keys
-        // e.g. 'owner' -> 'Owner', 'staff' -> 'Staff'
-        if (userRole && /^[a-z]/.test(userRole)) {
-            userRole = userRole.charAt(0).toUpperCase() + userRole.slice(1)
+        // Owner/Employer bypass (Always treat owner as Owner regardless of assigned permission_role)
+        if (req.user?.role === 'owner' || req.user?.role === 'employer') {
+            const ownerPerms = ROLE_PERMISSIONS['Owner']
+            if (ownerPerms.includes(permission)) {
+                return next()
+            }
+            // Fallthrough to check if mapped elsewhere, but usually Owner list is definitive.
         }
 
-        const permissions = ROLE_PERMISSIONS[userRole] || []
+        let originalRole = req.user?.permission_role || req.user?.role || 'Staff'
+
+        // Safe check: if owner role, force Key to 'Owner' for system lookup
+        let systemRoleKey = originalRole
+        if (req.user?.role === 'owner') systemRoleKey = 'Owner'
+
+        // Normalize role name (capitalize first letter) to match ROLE_PERMISSIONS keys
+        if (systemRoleKey && /^[a-z]/.test(systemRoleKey)) {
+            systemRoleKey = systemRoleKey.charAt(0).toUpperCase() + systemRoleKey.slice(1)
+        }
+
+        // 1. Check hardcoded permissions (Title Cased Key)
+        let permissions = ROLE_PERMISSIONS[systemRoleKey]
+
+        // 2. If not found, check custom roles in DB (Original Key, Case Insensitive)
+        if (!permissions && req.user?.clinicId) {
+            try {
+                const { data: clinic } = await supabaseAdmin
+                    .from('clinics')
+                    .select('custom_roles')
+                    .eq('id', req.user.clinicId)
+                    .single()
+
+                if (clinic && clinic.custom_roles) {
+                    const customRole = clinic.custom_roles.find(r =>
+                        r.name === originalRole ||
+                        r.name.toLowerCase() === originalRole.toLowerCase()
+                    )
+                    if (customRole) {
+                        permissions = customRole.permissions
+                    }
+                }
+            } catch (err) {
+                console.error('Custom role fetch error:', err)
+            }
+        }
+
+        permissions = permissions || []
+
+        // Safety: If somehow still owner but permissions empty (?), merge default Owner permissions
+        if (req.user?.role === 'owner') {
+            const ownerPerms = ROLE_PERMISSIONS['Owner'] || []
+            permissions = [...new Set([...permissions, ...ownerPerms])]
+        }
 
         if (!permissions.includes(permission)) {
-            console.log(`❌ Access denied: User ${req.user?.userId} (${userRole}) needs permission '${permission}'`)
+            console.log(`❌ Access denied: User ${req.user?.userId} (${originalRole}) needs permission '${permission}'`)
             return res.status(403).json({
-                error: `Access denied: Insufficient permissions. Role '${userRole}' cannot '${permission}'.`
+                error: `Access denied: Insufficient permissions. Role '${originalRole}' cannot '${permission}'.`
             })
         }
         next()
     }
 }
-
-

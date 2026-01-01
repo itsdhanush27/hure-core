@@ -39,7 +39,7 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
-        const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate, system_role, permissions } = req.body
+        const { first_name, last_name, email, phone, job_title, location_id, employment_type, pay_rate, permission_role } = req.body
 
         if (!email || !first_name || !last_name) {
             return res.status(400).json({ error: 'Email, first name, and last name required' })
@@ -97,8 +97,7 @@ router.post('/', authMiddleware, async (req, res) => {
                 pay_rate: pay_rate ? parseFloat(pay_rate) : null,
                 hire_date: req.body.hire_date || new Date().toISOString().split('T')[0],
                 role: 'staff',
-                permission_role: system_role === 'ADMIN' ? 'Shift Manager' : 'Staff', // Default admin to Shift Manager if generic ADMIN passed
-                permissions: system_role === 'ADMIN' && permissions ? permissions : null, // Store custom permissions for ADMIN
+                permission_role: permission_role || 'Staff', // Use role from request or default to Staff
                 account_type: 'staff',
                 password_hash: null,
                 is_active: false,
@@ -142,7 +141,7 @@ router.post('/', authMiddleware, async (req, res) => {
             // Don't fail the request, just log it
         }
 
-        res.json({ success: true, data })
+        res.json({ staff: data })
     } catch (err) {
         console.error('Create staff error:', err)
         res.status(500).json({ error: 'Failed to create staff' })

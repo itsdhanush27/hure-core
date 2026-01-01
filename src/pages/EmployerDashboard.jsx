@@ -45,6 +45,7 @@ export default function EmployerDashboard() {
         todayShifts: 0,
         presentToday: 0
     })
+    const [complianceStats, setComplianceStats] = useState({ count: 0, staffNames: [] })
 
     // Current location filter
     const [selectedLocation, setSelectedLocation] = useState('all')
@@ -90,9 +91,22 @@ export default function EmployerDashboard() {
                     ).length
                 }
 
+                // Fetch compliance stats
+                const compRes = await fetch(`/api/clinics/${clinicId}/compliance-stats`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                let compStats = { count: 0, staffNames: [] }
+                if (compRes.ok) {
+                    compStats = await compRes.json()
+                }
+
                 setDashboardStats({
                     todayShifts,
                     presentToday: presentCount
+                })
+                setComplianceStats({
+                    count: compStats.licenseCount || 0, // Using specific license count as requested
+                    staffNames: compStats.staffNames || []
                 })
             }
         } catch (err) {
@@ -486,8 +500,13 @@ export default function EmployerDashboard() {
                             Facility Licenses: {org.locations.filter(l => l.facility_verification_status === 'approved').length} / {org.locationCount} Approved
                         </span>
                     </div>
-                    <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
-                        <span className="text-sm text-slate-600">Staff Licenses: 0 added</span>
+                    <div className="flex flex-col gap-1 p-3 bg-slate-50 rounded-lg">
+                        <span className="text-sm text-slate-600">Staff Licenses: <strong>{complianceStats.count}</strong> added</span>
+                        {complianceStats.staffNames.length > 0 && (
+                            <span className="text-xs text-slate-500 truncate" title={complianceStats.staffNames.join(', ')}>
+                                By: {complianceStats.staffNames.join(', ')}
+                            </span>
+                        )}
                     </div>
                 </div>
             </Card>
@@ -591,6 +610,7 @@ export default function EmployerDashboard() {
                 is_active: staff.is_active !== false,
                 system_role: sysRole,
                 role: staff.role,
+                permission_role: staff.permission_role,
                 permissions: staff.permissions || []
             })
             setShowEditForm(true)
@@ -784,14 +804,19 @@ export default function EmployerDashboard() {
                                     />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">System Role</label>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
                                     <select
-                                        value={newStaff.system_role || 'EMPLOYEE'}
-                                        onChange={(e) => setNewStaff({ ...newStaff, system_role: e.target.value })}
+                                        value={newStaff.permission_role || 'Staff'}
+                                        onChange={(e) => setNewStaff({ ...newStaff, permission_role: e.target.value })}
                                         className="w-full px-3 py-2 rounded-lg border border-slate-300"
                                     >
-                                        <option value="EMPLOYEE">EMPLOYEE</option>
+                                        {DEFAULT_ROLES.filter(r => r.name !== 'Owner').map(role => (
+                                            <option key={role.name} value={role.name}>{role.name}</option>
+                                        ))}
                                     </select>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        {DEFAULT_ROLES.find(r => r.name === (newStaff.permission_role || 'Staff'))?.description}
+                                    </p>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
@@ -840,33 +865,7 @@ export default function EmployerDashboard() {
                                 </div>
                             </div>
 
-                            {/* Permissions Panel - Show only for ADMIN */}
-                            {newStaff.system_role === 'ADMIN' && (
-                                <div className="border rounded-lg p-4 bg-slate-50">
-                                    <h3 className="text-sm font-semibold text-slate-700 mb-3">Admin Permissions</h3>
-                                    <p className="text-xs text-slate-500 mb-3">Select specific permissions for this admin user. This allows fine-grained access control.</p>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {allPermissions.map(perm => (
-                                            <label key={perm} className="flex items-center gap-2 text-sm">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={newStaff.permissions?.includes(perm) || false}
-                                                    onChange={(e) => {
-                                                        const perms = newStaff.permissions || []
-                                                        if (e.target.checked) {
-                                                            setNewStaff({ ...newStaff, permissions: [...perms, perm] })
-                                                        } else {
-                                                            setNewStaff({ ...newStaff, permissions: perms.filter(p => p !== perm) })
-                                                        }
-                                                    }}
-                                                    className="rounded"
-                                                />
-                                                <span className="text-slate-700">{perm.replace(/_/g, ' ')}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
+
                             <div className="flex gap-3">
                                 <button
                                     type="submit"
@@ -969,122 +968,191 @@ export default function EmployerDashboard() {
                     )}
                 </Card>
 
-                {/* Edit Staff Modal */}
+                {/* Edit Staff Form (Modal) */}
                 {
                     showEditForm && editingStaff && (
                         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                            <div className="bg-white rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-                                <div className="p-4 border-b flex items-center justify-between">
+                            <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+                                <div className="p-4 border-b flex items-center justify-between sticky top-0 bg-white z-10">
                                     <h2 className="text-lg font-bold">Edit Staff Member</h2>
                                     <button onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="text-slate-400 hover:text-slate-600 text-2xl">×</button>
                                 </div>
-                                <form onSubmit={handleUpdateStaff} className="p-4 space-y-4">
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">First Name *</label>
-                                            <input type="text" value={editingStaff.first_name} onChange={(e) => setEditingStaff({ ...editingStaff, first_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Last Name *</label>
-                                            <input type="text" value={editingStaff.last_name} onChange={(e) => setEditingStaff({ ...editingStaff, last_name: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" required />
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-                                        <input type="email" value={editingStaff.email} onChange={(e) => setEditingStaff({ ...editingStaff, email: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
-                                        <input type="tel" value={editingStaff.phone} onChange={(e) => setEditingStaff({ ...editingStaff, phone: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Job Title</label>
-                                        <input type="text" value={editingStaff.job_title} onChange={(e) => setEditingStaff({ ...editingStaff, job_title: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">System Role</label>
-                                        {editingStaff.system_role === 'OWNER' || editingStaff.role === 'Owner' ? (
-                                            <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 font-medium">OWNER (immutable)</div>
-                                        ) : (
-                                            <select
-                                                value={editingStaff.system_role || 'EMPLOYEE'}
-                                                onChange={(e) => setEditingStaff({ ...editingStaff, system_role: e.target.value })}
-                                                className="w-full px-3 py-2 rounded-lg border border-slate-300"
-                                            >
-                                                <option value="EMPLOYEE">EMPLOYEE</option>
-                                                <option value="ADMIN">ADMIN</option>
-                                            </select>
-                                        )}
-                                        <p className="text-xs text-slate-500 mt-1">
-                                            Admin seats: {org.staff.filter(s => s.system_role === 'ADMIN' && s.is_active !== false).length} / {limits.adminSeats} used
-                                        </p>
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
-                                        <select value={editingStaff.location_id} onChange={(e) => setEditingStaff({ ...editingStaff, location_id: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
-                                            <option value="">No location</option>
-                                            {org.locations.map(loc => <option key={loc.id} value={loc.id}>{loc.name}</option>)}
-                                        </select>
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Employment Type</label>
-                                            <select value={editingStaff.employment_type} onChange={(e) => setEditingStaff({ ...editingStaff, employment_type: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300">
-                                                <option value="full-time">Full-time</option>
-                                                <option value="part-time">Part-time</option>
-                                                <option value="casual">Casual</option>
-                                                <option value="contract">Contract</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-medium text-slate-700 mb-1">Pay Rate (KES)</label>
-                                            <input type="number" value={editingStaff.pay_rate} onChange={(e) => setEditingStaff({ ...editingStaff, pay_rate: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-300" />
-                                        </div>
-                                    </div>
-
-                                    {/* Permissions Panel for Edit - Show only for ADMIN */}
-                                    {editingStaff.system_role === 'ADMIN' && (
-                                        <div className="border rounded-lg p-4 bg-slate-50">
-                                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Admin Permissions</h3>
-                                            <p className="text-xs text-slate-500 mb-3">Select specific permissions for this admin user.</p>
-                                            <div className="grid grid-cols-2 gap-2">
-                                                {allPermissions.map(perm => (
-                                                    <label key={perm} className="flex items-center gap-2 text-sm">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={editingStaff.permissions?.includes(perm) || false}
+                                <div className="p-4">
+                                    <form onSubmit={handleUpdateStaff} className="space-y-4">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">First Name *</label>
+                                                <input
+                                                    type="text"
+                                                    value={editingStaff.first_name || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, first_name: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                    required
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Last Name *</label>
+                                                <input
+                                                    type="text"
+                                                    value={editingStaff.last_name || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, last_name: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                    required
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Email *</label>
+                                                <input
+                                                    type="email"
+                                                    value={editingStaff.email || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, email: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                    required
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Phone</label>
+                                                <input
+                                                    type="tel"
+                                                    value={editingStaff.phone || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, phone: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Job Title *</label>
+                                                <input
+                                                    type="text"
+                                                    value={editingStaff.job_title || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, job_title: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                    required
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
+                                                {(editingStaff.role === 'Owner' || editingStaff.system_role === 'OWNER') ? (
+                                                    <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700 font-medium">OWNER (Immutable)</div>
+                                                ) : (
+                                                    <>
+                                                        <select
+                                                            value={editingStaff.permission_role || editingStaff.role || 'Staff'} // fallback
                                                             onChange={(e) => {
-                                                                const perms = editingStaff.permissions || []
-                                                                if (e.target.checked) {
-                                                                    setEditingStaff({ ...editingStaff, permissions: [...perms, perm] })
-                                                                } else {
-                                                                    setEditingStaff({ ...editingStaff, permissions: perms.filter(p => p !== perm) })
-                                                                }
+                                                                const newRole = e.target.value
+                                                                // Auto-set system_role based on permission role
+                                                                const isSystemAdmin = ['Start Manager', 'HR Manager', 'Payroll Officer', 'Owner'].includes(newRole)
+                                                                setEditingStaff({
+                                                                    ...editingStaff,
+                                                                    permission_role: newRole,
+                                                                    role: newRole, // Update legacy role field too
+                                                                    system_role: isSystemAdmin ? 'ADMIN' : 'EMPLOYEE'
+                                                                })
                                                             }}
-                                                            className="rounded"
-                                                        />
-                                                        <span className="text-slate-700">{perm.replace(/_/g, ' ')}</span>
-                                                    </label>
-                                                ))}
+                                                            className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                        >
+                                                            {/* We assume DEFAULT_ROLES is available since Add Form uses it */}
+                                                            {DEFAULT_ROLES.length > 0 ? (
+                                                                DEFAULT_ROLES.filter(r => r.name !== 'Owner').map(role => (
+                                                                    <option key={role.name} value={role.name}>{role.name}</option>
+                                                                ))
+                                                            ) : (
+                                                                // Fallback options if DEFAULT_ROLES not found (safety)
+                                                                <>
+                                                                    <option value="Staff">Staff</option>
+                                                                    <option value="Shift Manager">Shift Manager</option>
+                                                                    <option value="HR Manager">HR Manager</option>
+                                                                    <option value="Payroll Officer">Payroll Officer</option>
+                                                                </>
+                                                            )}
+                                                        </select>
+                                                        <p className="text-xs text-slate-500 mt-1">
+                                                            Current System Role: {editingStaff.system_role || 'EMPLOYEE'}
+                                                        </p>
+                                                    </>
+                                                )}
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Location</label>
+                                                <select
+                                                    value={editingStaff.location_id || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, location_id: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                >
+                                                    <option value="">No specific location</option>
+                                                    {org.locations.map(loc => (
+                                                        <option key={loc.id} value={loc.id}>{loc.name}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Employment Type *</label>
+                                                <select
+                                                    value={editingStaff.employment_type || 'full-time'}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, employment_type: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                    required
+                                                >
+                                                    <option value="full-time">Full-Time (Salary)</option>
+                                                    <option value="part-time">Part-Time</option>
+                                                    <option value="casual">Casual</option>
+                                                    <option value="contract">Contract</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Pay Rate (KES)</label>
+                                                <input
+                                                    type="number"
+                                                    value={editingStaff.pay_rate || ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, pay_rate: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-sm font-medium text-slate-700 mb-1">Hire Date</label>
+                                                <input
+                                                    type="date"
+                                                    value={editingStaff.hire_date ? editingStaff.hire_date.split('T')[0] : ''}
+                                                    onChange={(e) => setEditingStaff({ ...editingStaff, hire_date: e.target.value })}
+                                                    className="w-full px-3 py-2 rounded-lg border border-slate-300"
+                                                />
                                             </div>
                                         </div>
-                                    )}
 
-                                    <div className="flex items-center gap-2">
-                                        <input type="checkbox" id="is_active" checked={editingStaff.is_active} onChange={(e) => setEditingStaff({ ...editingStaff, is_active: e.target.checked })} className="rounded" />
-                                        <label htmlFor="is_active" className="text-sm text-slate-700">Active Employee</label>
-                                    </div>
-                                    <div className="flex gap-3 pt-2">
-                                        <button type="submit" disabled={updating} className="flex-1 bg-primary-600 hover:bg-primary-700 text-white py-2 rounded-lg font-medium disabled:opacity-50">
-                                            {updating ? 'Saving...' : 'Save Changes'}
-                                        </button>
-                                        <button type="button" onClick={() => { setShowEditForm(false); setEditingStaff(null) }} className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50">Cancel</button>
-                                    </div>
-                                </form>
+                                        {/* Status Toggle */}
+                                        <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                                            <input
+                                                type="checkbox"
+                                                id="edit_is_active"
+                                                checked={editingStaff.is_active !== false}
+                                                onChange={(e) => setEditingStaff({ ...editingStaff, is_active: e.target.checked })}
+                                                className="rounded"
+                                            />
+                                            <label htmlFor="edit_is_active" className="text-sm text-slate-700">Active Employee (Can login)</label>
+                                        </div>
+
+                                        <div className="flex gap-3 pt-2">
+                                            <button
+                                                type="submit"
+                                                disabled={updating}
+                                                className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg disabled:opacity-50"
+                                            >
+                                                {updating ? 'Saving...' : 'Save Changes'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowEditForm(false); setEditingStaff(null) }}
+                                                className="px-4 py-2 border border-slate-300 rounded-lg hover:bg-slate-50"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
                             </div>
                         </div>
                     )
                 }
+
             </div >
         )
     }
@@ -1183,28 +1251,41 @@ export default function EmployerDashboard() {
                 const formData = new FormData()
                 formData.append('file', file)
                 formData.append('documentType', documentType)
-                formData.append('expiryDate', documentType === 'business_reg' ? orgForm.business_reg_expiry : orgForm.facility_license_expiry)
+
+                if (documentType === 'business_reg') {
+                    formData.append('expiryDate', orgForm.business_reg_expiry)
+                } else if (documentType === 'facility_license') {
+                    if (!facForm.locationId) {
+                        alert('Please select a location first')
+                        setUploading(false)
+                        return
+                    }
+                    formData.append('locationId', facForm.locationId)
+                    formData.append('expiryDate', facForm.expiry_date)
+                }
 
                 // Upload to backend which will save to Supabase Storage
                 const res = await fetch(`/api/clinics/${clinicId}/documents/upload`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
-                        // Note: Don't set Content-Type for FormData - browser sets it with boundary
                     },
                     body: formData
                 })
 
                 if (res.ok) {
                     const data = await res.json()
-                    // Update org state with new document URL
-                    setOrg(prev => ({ ...prev, ...data.clinic }))
 
-                    // Update local form state with filename
                     if (documentType === 'business_reg') {
+                        setOrg(prev => ({ ...prev, ...data.clinic }))
                         setOrgForm(prev => ({ ...prev, business_reg_doc: file.name }))
-                    } else {
-                        setOrgForm(prev => ({ ...prev, facility_license_doc: file.name }))
+                    } else if (documentType === 'facility_license') {
+                        setOrg(prev => ({
+                            ...prev,
+                            locations: prev.locations.map(loc =>
+                                loc.id === data.location.id ? { ...loc, ...data.location } : loc
+                            )
+                        }))
                     }
 
                     alert('Document uploaded successfully!')
@@ -1512,19 +1593,12 @@ export default function EmployerDashboard() {
                                             className={`flex-1 px-3 py-2 border rounded-lg cursor-pointer text-sm ${org.org_verification_status === 'approved' ? 'bg-slate-100 cursor-not-allowed' : 'hover:bg-slate-50'
                                                 }`}
                                         >
-                                            {org.facility_license_doc ? '📄 ' + (orgForm.facility_license_doc || 'Document uploaded') : '📎 Upload PDF, JPG, or PNG'}
+                                            {org.locations.find(l => l.id === facForm.locationId)?.license_document_url
+                                                ? '📄 Document uploaded'
+                                                : '📎 Upload PDF, JPG, or PNG'}
                                         </label>
                                     </div>
-                                    <div className="mt-1">
-                                        <label className="block text-xs text-slate-600 mb-1">Expiry Date (if applicable)</label>
-                                        <input
-                                            type="date"
-                                            value={orgForm.facility_license_expiry}
-                                            onChange={(e) => setOrgForm({ ...orgForm, facility_license_expiry: e.target.value })}
-                                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                                            disabled={org.org_verification_status === 'approved'}
-                                        />
-                                    </div>
+
                                 </div>
                                 <button
                                     type="submit"
@@ -1540,20 +1614,82 @@ export default function EmployerDashboard() {
 
                 {/* Compliance Summary */}
                 <Card title="Compliance Summary">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="p-4 bg-slate-50 rounded-lg">
-                            <div className="font-medium mb-2">Organization</div>
-                            <span className={`px-2 py-1 rounded text-xs ${org.orgVerificationStatus === 'approved' ? 'bg-green-100 text-green-700' : 'bg-slate-200'}`}>
-                                {org.orgVerificationStatus}
-                            </span>
-                        </div>
-                        <div className="p-4 bg-slate-50 rounded-lg">
-                            <div className="font-medium mb-2">Facilities ({org.locationCount} locations)</div>
-                            <div className="text-sm text-slate-600">
-                                {org.locations.filter(l => l.facility_verification_status === 'approved').length} Approved ·
-                                {org.locations.filter(l => l.facility_verification_status === 'pending_review').length} Pending ·
-                                {org.locations.filter(l => !l.facility_verification_status || l.facility_verification_status === 'draft').length} Draft
+                    <div className="space-y-6">
+                        {/* Organization Section */}
+                        <div className="bg-slate-50 rounded-lg p-4 border border-slate-100">
+                            <div className="flex items-center justify-between mb-3">
+                                <h4 className="font-semibold text-slate-800">Organization Details</h4>
+                                <span className={`px-2 py-1 rounded text-xs font-medium ${org.orgVerificationStatus === 'approved' ? 'bg-green-100 text-green-700' :
+                                    org.orgVerificationStatus === 'under_review' ? 'bg-amber-100 text-amber-700' :
+                                        'bg-slate-200 text-slate-600'
+                                    }`}>
+                                    {org.orgVerificationStatus === 'approved' ? 'Approved' :
+                                        org.orgVerificationStatus === 'under_review' ? 'Under Review' : 'Pending'}
+                                </span>
                             </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                                <div>
+                                    <span className="block text-slate-500 text-xs">Business Registration No.</span>
+                                    <span className="font-medium text-slate-900">{org.business_reg_no || '-'}</span>
+                                </div>
+                                <div>
+                                    <span className="block text-slate-500 text-xs">Document</span>
+                                    {org.business_reg_doc ? (
+                                        <a href={org.business_reg_doc} target="_blank" rel="noopener noreferrer" className="text-primary-600 hover:text-primary-700 flex items-center gap-1 font-medium">
+                                            <span>📄 View Document</span>
+                                            <span className="text-xs">↗</span>
+                                        </a>
+                                    ) : (
+                                        <span className="text-slate-400 italic">No document uploaded</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Facilities Section */}
+                        <div className="bg-slate-50 rounded-lg p-4 border border-slate-100">
+                            <div className="flex items-center justify-between mb-3">
+                                <h4 className="font-semibold text-slate-800">Facilities ({org.locationCount})</h4>
+                                <div className="text-xs text-slate-500">
+                                    {org.locations.filter(l => l.facility_verification_status === 'approved').length} Verified
+                                </div>
+                            </div>
+
+                            {org.locations.length === 0 ? (
+                                <p className="text-sm text-slate-500 italic">No facilities added yet.</p>
+                            ) : (
+                                <div className="space-y-3">
+                                    {org.locations.map(loc => (
+                                        <div key={loc.id} className="bg-white p-3 rounded border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+                                            <div className="flex-1">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-medium text-slate-900">{loc.name}</span>
+                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${loc.facility_verification_status === 'approved' ? 'bg-green-100 text-green-700' :
+                                                            loc.facility_verification_status === 'pending_review' ? 'bg-amber-100 text-amber-700' :
+                                                                'bg-slate-100 text-slate-500'
+                                                        }`}>
+                                                        {loc.facility_verification_status === 'approved' ? 'Approved' :
+                                                            loc.facility_verification_status === 'pending_review' ? 'Pending' : 'Draft'}
+                                                    </span>
+                                                </div>
+                                                <div className="text-xs text-slate-500 mt-1">
+                                                    License: {loc.license_no || 'N/A'} {loc.license_expiry ? `(Exp: ${new Date(loc.license_expiry).toLocaleDateString()})` : ''}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex-shrink-0">
+                                                {loc.license_document_url || loc.facility_license_url ? (
+                                                    <a href={loc.license_document_url || loc.facility_license_url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary-600 hover:text-primary-700 font-medium px-2 py-1 bg-primary-50 rounded border border-primary-100 flex items-center gap-1">
+                                                        <span>📄 View License</span>
+                                                    </a>
+                                                ) : (
+                                                    <span className="text-xs text-slate-400 italic">No license doc</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </Card>
@@ -1818,20 +1954,20 @@ export default function EmployerDashboard() {
         {
             name: 'HR Manager',
             description: 'Manage staff, leave, and attendance',
-            permissions: ['manage_staff', 'approve_leave', 'edit_attendance'],
-            isSystem: false
+            permissions: ['manage_staff', 'approve_leave', 'edit_attendance', 'manage_docs_policies'],
+            isSystem: true
         },
         {
             name: 'Shift Manager',
             description: 'Manage schedules and coverage',
-            permissions: ['manage_schedule'],
-            isSystem: false
+            permissions: ['manage_schedule', 'manage_staff'],
+            isSystem: true
         },
         {
             name: 'Payroll Officer',
             description: 'Export payroll and view attendance',
             permissions: ['export_payroll', 'edit_attendance'],
-            isSystem: false
+            isSystem: true
         },
         {
             name: 'Staff',
@@ -1845,15 +1981,47 @@ export default function EmployerDashboard() {
         const [roles, setRoles] = useState(DEFAULT_ROLES)
         const [showAddRole, setShowAddRole] = useState(false)
         const [newRole, setNewRole] = useState({ name: '', description: '', permissions: [] })
+        const [loadingRoles, setLoadingRoles] = useState(false)
 
-        // Count admin roles used (users with elevated permissions) - exclude SuperAdmin
+        // Fetch custom roles on mount
+        useEffect(() => {
+            fetchRoles()
+        }, [])
+
+        const fetchRoles = async () => {
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
+            if (!clinicId || !token) return
+
+            try {
+                setLoadingRoles(true)
+                const res = await fetch(`/api/clinics/${clinicId}/roles`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+                if (res.ok) {
+                    const data = await res.json()
+                    // Merge default roles with custom roles
+                    // Ensure we don't duplicate names if logic changes, but for now simple merge
+                    setRoles([...DEFAULT_ROLES, ...data.roles])
+                }
+            } catch (err) {
+                console.error('Failed to fetch roles:', err)
+            } finally {
+                setLoadingRoles(false)
+            }
+
+        }
+
+        // Count admin roles used (users with elevated permissions) - only count HR Manager, Shift Manager, Payroll Officer
         const adminSeatsUsed = org.staff.filter(s => {
             if (!s) return false
             // Skip SuperAdmin (platform owner, not a clinic user)
             if (s.role === 'superadmin' || s.email?.includes('@hure.app')) return false
-            // Check if user has any elevated permissions via their permission_role
-            return s.permission_role && ['HR Manager', 'Shift Manager', 'Payroll Officer', 'Owner'].includes(s.permission_role)
-        }).length + 1 // +1 for clinic owner
+            // Skip Owner - they don't count against admin seats
+            if (s.role === 'owner' || s.permission_role === 'Owner') return false
+            // Only count staff with elevated permission_role
+            return s.permission_role && ['HR Manager', 'Shift Manager', 'Payroll Officer'].includes(s.permission_role)
+        }).length
 
         const canAddAdmin = adminSeatsUsed < limits.adminSeats
 
@@ -1888,23 +2056,106 @@ export default function EmployerDashboard() {
             }
         }
 
-        const togglePermission = (roleIndex, permission) => {
-            if (roles[roleIndex].isSystem) return
-            const updated = [...roles]
-            const perms = updated[roleIndex].permissions
-            if (perms.includes(permission)) {
-                updated[roleIndex].permissions = perms.filter(p => p !== permission)
+        const togglePermission = async (roleIndex, permission) => {
+            const role = roles[roleIndex]
+            if (role.isSystem) return
+
+            // Optimistic update
+            const oldPermissions = [...role.permissions]
+            let newPermissions = []
+            if (oldPermissions.includes(permission)) {
+                newPermissions = oldPermissions.filter(p => p !== permission)
             } else {
-                updated[roleIndex].permissions = [...perms, permission]
+                newPermissions = [...oldPermissions, permission]
             }
-            setRoles(updated)
+
+            const updatedRoles = [...roles]
+            updatedRoles[roleIndex] = { ...role, permissions: newPermissions }
+            setRoles(updatedRoles)
+
+            // API Call
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
+
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/roles/${encodeURIComponent(role.name)}`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ permissions: newPermissions })
+                })
+
+                if (!res.ok) {
+                    throw new Error('Failed to update')
+                }
+            } catch (err) {
+                console.error('Permission update error:', err)
+                // Revert
+                const revertedRoles = [...roles]
+                revertedRoles[roleIndex] = { ...role, permissions: oldPermissions }
+                setRoles(revertedRoles)
+                alert('Failed to save permission change')
+            }
         }
 
-        const handleAddRole = (e) => {
+        const handleAddRole = async (e) => {
             e.preventDefault()
-            setRoles([...roles, { ...newRole, isSystem: false }])
-            setNewRole({ name: '', description: '', permissions: [] })
-            setShowAddRole(false)
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
+
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/roles`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        name: newRole.name,
+                        description: newRole.description,
+                        permissions: newRole.permissions
+                    })
+                })
+
+                if (res.ok) {
+                    const data = await res.json()
+                    setRoles([...roles, { ...data.role, isSystem: false }])
+                    setNewRole({ name: '', description: '', permissions: [] })
+                    setShowAddRole(false)
+                } else {
+                    const err = await res.json()
+                    alert(err.error || 'Failed to create role')
+                }
+            } catch (err) {
+                console.error('Create role error:', err)
+                alert('Failed to create role')
+            }
+        }
+
+        const handleDeleteRole = async (roleName) => {
+            if (!window.confirm(`Are you sure you want to delete the "${roleName}" role?`)) return
+
+            const clinicId = localStorage.getItem('hure_clinic_id')
+            const token = localStorage.getItem('hure_token')
+
+            try {
+                const res = await fetch(`/api/clinics/${clinicId}/roles/${encodeURIComponent(roleName)}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                })
+
+                if (res.ok) {
+                    setRoles(roles.filter(r => r.name !== roleName))
+                } else {
+                    const err = await res.json()
+                    alert(err.error || 'Failed to delete role')
+                }
+            } catch (err) {
+                console.error('Delete role error:', err)
+                alert('Failed to delete role')
+            }
         }
 
         return (
@@ -2003,7 +2254,12 @@ export default function EmployerDashboard() {
                                         <div className="text-sm text-slate-500">{role.description}</div>
                                     </div>
                                     {!role.isSystem && (
-                                        <button className="text-red-600 hover:text-red-700 text-sm">Delete</button>
+                                        <button
+                                            onClick={() => handleDeleteRole(role.name)}
+                                            className="text-red-600 hover:text-red-700 text-sm"
+                                        >
+                                            Delete
+                                        </button>
                                     )}
                                 </div>
 
