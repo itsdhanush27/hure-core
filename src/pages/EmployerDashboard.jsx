@@ -133,7 +133,10 @@ export default function EmployerDashboard() {
                         email: data.clinic.email || '',
                         plan: data.clinic.plan_key || null,  // Don't default - force plan selection
                         planStatus: data.clinic.plan_status || 'inactive',
-                        orgVerificationStatus: data.clinic.org_verification_status || 'pending'
+                        orgVerificationStatus: data.clinic.org_verification_status || 'pending',
+                        business_reg_no: data.clinic.business_reg_no || '',
+                        business_reg_doc: data.clinic.business_reg_doc || null,
+                        facility_license_expiry: data.clinic.facility_license_expiry || null, // For backward compatibility if needed
                     }))
                 }
                 if (data.locations) {
@@ -1665,8 +1668,8 @@ export default function EmployerDashboard() {
                                                 <div className="flex items-center gap-2">
                                                     <span className="font-medium text-slate-900">{loc.name}</span>
                                                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${loc.facility_verification_status === 'approved' ? 'bg-green-100 text-green-700' :
-                                                            loc.facility_verification_status === 'pending_review' ? 'bg-amber-100 text-amber-700' :
-                                                                'bg-slate-100 text-slate-500'
+                                                        loc.facility_verification_status === 'pending_review' ? 'bg-amber-100 text-amber-700' :
+                                                            'bg-slate-100 text-slate-500'
                                                         }`}>
                                                         {loc.facility_verification_status === 'approved' ? 'Approved' :
                                                             loc.facility_verification_status === 'pending_review' ? 'Pending' : 'Draft'}
