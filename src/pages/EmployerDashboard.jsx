@@ -1321,19 +1321,29 @@ export default function EmployerDashboard() {
         const handleSubmitVerification = async () => {
             const clinicId = localStorage.getItem('hure_clinic_id')
 
-            if (!org.business_reg_doc || !org.facility_license_doc) {
-                alert('Please upload both required documents before submitting')
+            // Validate all required fields
+            if (!orgForm.business_reg_no) {
+                alert('Please enter Business Registration Number')
+                return
+            }
+            if (!org.business_reg_doc) {
+                alert('Please upload Business Registration Document')
                 return
             }
 
             setSubmitting(true)
             try {
-                const res = await fetch(`/api/clinics/${clinicId}/verification/submit`, {
-                    method: 'PATCH',
+                const res = await fetch(`/api/clinics/${clinicId}/verification`, {
+                    method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('hure_token')}`
-                    }
+                    },
+                    body: JSON.stringify({
+                        kra_pin: orgForm.kra_pin,
+                        business_reg_no: orgForm.business_reg_no,
+                        business_reg_expiry: orgForm.business_reg_expiry
+                    })
                 })
 
                 if (res.ok) {
@@ -1514,7 +1524,7 @@ export default function EmployerDashboard() {
                                 <button
                                     type="button"
                                     onClick={handleSubmitVerification}
-                                    disabled={submitting || uploading || !org.business_reg_doc || !org.facility_license_doc}
+                                    disabled={submitting || uploading || !orgForm.business_reg_no || !org.business_reg_doc}
                                     className="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {submitting ? 'Submitting...' : org.org_verification_status === 'rejected' ? 'Resubmit for Review' : 'Submit for Review'}

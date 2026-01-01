@@ -155,7 +155,7 @@ router.patch('/:clinicId/settings', authMiddleware, requirePermission('manage_se
 router.post('/:clinicId/verification', authMiddleware, async (req, res) => {
     try {
         const { clinicId } = req.params
-        const { kra_pin, business_reg_no } = req.body
+        const { kra_pin, business_reg_no, business_reg_expiry } = req.body
 
         // CRITICAL: Validate that the user belongs to this clinic to prevent cross-tenant updates
         if (req.user.clinicId !== clinicId) {
@@ -168,6 +168,7 @@ router.post('/:clinicId/verification', authMiddleware, async (req, res) => {
             .update({
                 kra_pin,
                 business_reg_no,
+                business_reg_expiry: business_reg_expiry || null,
                 org_verification_status: 'under_review',
                 updated_at: new Date().toISOString()
             })
